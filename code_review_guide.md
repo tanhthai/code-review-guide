@@ -21,10 +21,11 @@ When raising review feedback, prioritize issues in this order — from highest b
 
 - Does it solve the correct problem?
 - Are acceptance criteria fully satisfied?
-- Are edge cases handled?
-- Are failure scenarios handled properly?
+- Does the change match the PR scope? (no missing work, no scope creep)
+- Are edge cases and failure paths explicitly covered in the requirements?
 - Does it follow business/domain rules?
-- Are non-functional requirements respected? (performance, security, scalability)
+- Are SLAs, compliance constraints, or data volume expectations from the spec respected?
+- Are there regressions to existing behavior?
 
 **Why first?** Because perfect code that solves the wrong problem is still wrong.
 
