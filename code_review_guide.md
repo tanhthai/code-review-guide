@@ -1,4 +1,19 @@
-# Code Review Priority Guide
+# Code Review Guide
+
+When raising review feedback, prioritize issues in this order — from highest business risk to lowest. Style and formatting should never block a correctness or security concern.
+
+1. [Requirement & Business Correctness](#requirement--business-correctness-look-first)
+2. [Security](#security-high-risk-area)
+3. [Performance & System Risk](#performance--system-risk)
+4. [Scalability & Concurrency](#scalability--concurrency)
+5. [Architecture & Design](#architecture--design)
+6. [Testability](#testability-design-quality-indicator)
+7. [Test Coverage & Test Quality](#test-coverage--test-quality)
+8. [Readability & Maintainability](#readability--maintainability)
+9. [Infrastructure & Cost Impact](#infrastructure--cost-impact-advanced-review)
+10. [Style & Formatting](#style--formatting-last)
+
+---
 
 ## Requirement & Business Correctness (Look First)
 
@@ -12,6 +27,8 @@
 - Are non-functional requirements respected? (performance, security, scalability)
 
 **Why first?** Because perfect code that solves the wrong problem is still wrong.
+
+### Does it solve the correct problem?
 
 ---
 
