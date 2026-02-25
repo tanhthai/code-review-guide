@@ -29,7 +29,106 @@ When raising review feedback, prioritize issues in this order — from highest b
 
 **Why first?** Because perfect code that solves the wrong problem is still wrong.
 
-### Does it solve the correct problem?
+<details>
+<summary>Does it solve the correct problem?</summary>
+
+**Requirement:** Apply 20% discount for premium users, 10% for regular users.
+
+❌ Bad — solves the wrong problem:
+
+```java
+public double calculateDiscount(User user, double price) {
+    return price * 0.10; // Always 10% — ignores user type entirely
+}
+```
+
+✅ Good — solves the correct problem:
+
+```java
+public double calculateDiscount(User user, double price) {
+    if (user.isPremium()) {
+        return price * 0.20;
+    }
+    return price * 0.10;
+}
+```
+
+The bad version compiles and looks clean — but it silently violates the business requirement.
+
+</details>
+
+<details>
+<summary>Are edge cases and failure paths explicitly covered?</summary>
+
+**Requirement:** Process an order and calculate its total.
+
+❌ Bad — ignores null and empty input:
+
+```java
+public void processOrder(List<Item> items) {
+    double total = 0;
+    for (Item item : items) {
+        total += item.getPrice(); // NullPointerException if items is null
+    }
+    checkout(total); // Called even for empty orders
+}
+```
+
+✅ Good — guards edge cases explicitly:
+
+```java
+public void processOrder(List<Item> items) {
+    if (items == null || items.isEmpty()) {
+        throw new IllegalArgumentException("Order must contain at least one item");
+    }
+    double total = 0;
+    for (Item item : items) {
+        if (item.getPrice() < 0) {
+            throw new IllegalArgumentException("Item price cannot be negative: " + item.getName());
+        }
+        total += item.getPrice();
+    }
+    checkout(total);
+}
+```
+
+Ask: what happens with null input, empty lists, zero amounts, or negative values?
+
+</details>
+
+<details>
+<summary>Does it follow business/domain rules?</summary>
+
+**Requirement:** Users may withdraw funds, but a minimum balance of $10 must always remain.
+
+❌ Bad — only checks available balance, misses the domain rule:
+
+```java
+public void withdraw(Account account, double amount) {
+    if (amount > account.getBalance()) {
+        throw new InsufficientFundsException();
+    }
+    account.debit(amount);
+}
+```
+
+✅ Good — enforces the minimum balance rule:
+
+```java
+public void withdraw(Account account, double amount) {
+    if (amount <= 0) {
+        throw new IllegalArgumentException("Withdrawal amount must be positive");
+    }
+    if (account.getBalance() - amount < 10.0) {
+        throw new InsufficientFundsException("Minimum balance of $10 must be maintained");
+    }
+    account.debit(amount);
+}
+```
+
+Domain rules are often implicit — reviewers must know the spec, not just read the code.
+
+</details>
 
 ---
 
