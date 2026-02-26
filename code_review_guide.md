@@ -210,7 +210,43 @@ Ask: could this change break something that currently works, even outside the fi
 <details>
 <summary>Input validation + output escaping (XSS)</summary>
 
-**Requirement:** Render a user-submitted comment on a page.
+**Input validation** — reject bad input before it enters your system:
+
+❌ Bad — no validation, accepts anything:
+
+```java
+@PostMapping("/comments")
+public void submitComment(String comment) {
+    commentRepository.save(new Comment(comment)); // null, blank, or 10,000-char input accepted
+}
+```
+
+✅ Good — validate before processing:
+
+```java
+@PostMapping("/comments")
+public void submitComment(String comment) {
+    if (comment == null || comment.isBlank()) {
+        throw new IllegalArgumentException("Comment must not be empty");
+    }
+    if (comment.length() > 500) {
+        throw new IllegalArgumentException("Comment must not exceed 500 characters");
+    }
+    commentRepository.save(new Comment(comment));
+}
+```
+
+Common validation checks:
+
+- null / blank
+- length (min / max)
+- format (email, phone, UUID, date)
+- numeric range (min / max value)
+- allowlist (only accepted values, e.g. enum, country code)
+- file type + size
+- no dangerous patterns (SQL keywords, script tags, path traversal `../`)
+
+**Output escaping** — encode before rendering to prevent XSS:
 
 ❌ Bad — raw user input injected into HTML:
 
