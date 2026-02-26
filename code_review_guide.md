@@ -62,6 +62,28 @@ The bad version compiles and looks clean — but it silently violates the busine
 </details>
 
 <details>
+<summary>Are acceptance criteria fully satisfied?</summary>
+
+**Ticket AC:** "Show an error message when login fails."
+
+The PR adds login logic and returns a `401` status on failure — but no user-facing error message is rendered anywhere. The code is technically correct but the AC is only half-met. A reviewer who only reads the backend logic will miss this.
+
+Check every AC line by line against the actual change.
+
+</details>
+
+<details>
+<summary>Does the change match the PR scope?</summary>
+
+**Ticket:** "Fix null pointer exception on the user profile page."
+
+The PR fixes the bug — but also refactors the authentication service "while they were in there." The auth refactor is unreviewed, unticketed, and adds risk to an unrelated area. This is scope creep.
+
+The reverse is also true: if the ticket requires updating both the API and the UI, but only the API is changed, that's missing work.
+
+</details>
+
+<details>
 <summary>Are edge cases and failure paths explicitly covered?</summary>
 
 **Requirement:** Process an order and calculate its total.
@@ -131,28 +153,6 @@ public void withdraw(Account account, double amount) {
 ```
 
 Domain rules are often implicit — reviewers must know the spec, not just read the code.
-
-</details>
-
-<details>
-<summary>Are acceptance criteria fully satisfied?</summary>
-
-**Ticket AC:** "Show an error message when login fails."
-
-The PR adds login logic and returns a `401` status on failure — but no user-facing error message is rendered anywhere. The code is technically correct but the AC is only half-met. A reviewer who only reads the backend logic will miss this.
-
-Check every AC line by line against the actual change.
-
-</details>
-
-<details>
-<summary>Does the change match the PR scope?</summary>
-
-**Ticket:** "Fix null pointer exception on the user profile page."
-
-The PR fixes the bug — but also refactors the authentication service "while they were in there." The auth refactor is unreviewed, unticketed, and adds risk to an unrelated area. This is scope creep.
-
-The reverse is also true: if the ticket requires updating both the API and the UI, but only the API is changed, that's missing work.
 
 </details>
 
