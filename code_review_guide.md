@@ -269,6 +269,10 @@ public String renderComment(String comment) {
 <details>
 <summary>AuthN + AuthZ (incl. IDOR)</summary>
 
+- **AuthN (Authentication)** — verifying *who* the user is (login, token validation)
+- **AuthZ (Authorization)** — verifying *what* the user is allowed to do
+- **IDOR (Insecure Direct Object Reference)** — an AuthZ failure where a user accesses another user's resource by manipulating an ID in the request
+
 **Requirement:** Allow users to view their own orders.
 
 ❌ Bad — no ownership check (IDOR):
