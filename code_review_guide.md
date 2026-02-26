@@ -302,7 +302,7 @@ public Order getOrder(Long orderId, User currentUser) {
 <details>
 <summary>Injection: SQL + command + NoSQL</summary>
 
-**Requirement:** Find a user by username.
+**SQL injection** — user input concatenated into a query string:
 
 ❌ Bad — string concatenation opens SQL injection:
 
@@ -322,6 +322,48 @@ public User findByUsername(String username) {
         userRowMapper,
         username
     );
+}
+```
+
+**Command injection** — user input passed directly to a shell command:
+
+❌ Bad — attacker can append arbitrary shell commands:
+
+```java
+public String ping(String host) throws IOException {
+    Process process = Runtime.getRuntime().exec("ping -c 1 " + host); // attacker passes: google.com; rm -rf /
+    return new String(process.getInputStream().readAllBytes());
+}
+```
+
+✅ Good — validate input and pass arguments as an array, bypassing shell interpretation:
+
+```java
+public String ping(String host) throws IOException {
+    if (!host.matches("^[a-zA-Z0-9.-]+$")) {
+        throw new IllegalArgumentException("Invalid host");
+    }
+    Process process = new ProcessBuilder("ping", "-c", "1", host).start();
+    return new String(process.getInputStream().readAllBytes());
+}
+```
+
+**NoSQL injection** — user input embedded in a raw query document:
+
+❌ Bad — attacker passes `{"$gt": ""}` to bypass the username match:
+
+```java
+public Document findUser(String username) {
+    String jsonQuery = "{\"username\": \"" + username + "\"}";
+    return collection.find(Document.parse(jsonQuery)).first(); // operator injection
+}
+```
+
+✅ Good — use a typed query builder; input is always treated as a value, never as an operator:
+
+```java
+public Document findUser(String username) {
+    return collection.find(Filters.eq("username", username)).first();
 }
 ```
 
