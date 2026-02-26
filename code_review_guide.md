@@ -30,6 +30,10 @@ When raising review feedback, prioritize issues in this order — from highest b
 **Why first?** Because perfect code that solves the wrong problem is still wrong.
 
 <details>
+<summary>Further details</summary>
+
+<blockquote>
+<details>
 <summary>Does it solve the correct problem?</summary>
 
 **Requirement:** Apply 20% discount for premium users, 10% for regular users.
@@ -127,6 +131,51 @@ public void withdraw(Account account, double amount) {
 ```
 
 Domain rules are often implicit — reviewers must know the spec, not just read the code.
+
+</details>
+
+<details>
+<summary>Are acceptance criteria fully satisfied?</summary>
+
+**Ticket AC:** "Show an error message when login fails."
+
+The PR adds login logic and returns a `401` status on failure — but no user-facing error message is rendered anywhere. The code is technically correct but the AC is only half-met. A reviewer who only reads the backend logic will miss this.
+
+Check every AC line by line against the actual change.
+
+</details>
+
+<details>
+<summary>Does the change match the PR scope?</summary>
+
+**Ticket:** "Fix null pointer exception on the user profile page."
+
+The PR fixes the bug — but also refactors the authentication service "while they were in there." The auth refactor is unreviewed, unticketed, and adds risk to an unrelated area. This is scope creep.
+
+The reverse is also true: if the ticket requires updating both the API and the UI, but only the API is changed, that's missing work.
+
+</details>
+
+<details>
+<summary>Are SLAs, compliance constraints, or data volume expectations respected?</summary>
+
+**Spec:** "The search API must return results in under 300ms for up to 100,000 records."
+
+The PR adds a new filter that works fine in dev with 500 records — but runs a full table scan with no index. At 100,000 records in production, it will blow the SLA.
+
+Check the spec for performance budgets, data volume targets, retention rules, or compliance requirements (GDPR, PCI, HIPAA) and verify the code respects them.
+
+</details>
+
+<details>
+<summary>Are there regressions to existing behavior?</summary>
+
+**Scenario:** A shared utility method is updated to support a new optional parameter with a default value. A caller in another module relied on the previous default behavior — it now silently receives wrong output with no compile error and no failing test.
+
+Ask: could this change break something that currently works, even outside the files modified in this PR?
+
+</details>
+</blockquote>
 
 </details>
 
