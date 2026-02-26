@@ -118,7 +118,14 @@ public void processOrder(List<Item> items) {
 }
 ```
 
-Ask: what happens with null input, empty lists, zero amounts, or negative values?
+Common categories to check:
+
+- null / empty inputs
+- zero, negative, or boundary values
+- max size / very large inputs
+- duplicate or repeated values
+- concurrent access to shared state
+- external dependency unavailable (timeout, error)
 
 </details>
 
