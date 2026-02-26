@@ -404,9 +404,19 @@ public void authenticate(String username, String password) {
 
 ```java
 public void authenticate(String username, String password) {
-    log.info("Login attempt: user={}", username); // Never log credentials, tokens, or PII
+    log.info("Login attempt: user={}", username); // Never log passwords, tokens, or secrets
 }
 ```
+
+Never log or expose:
+
+- passwords / passphrases
+- API keys / secret tokens / JWT secrets
+- session IDs / OAuth tokens / refresh tokens
+- credit card numbers / CVV / bank account numbers
+- SSN / national ID / passport numbers
+- private keys / certificates
+- PII in high-risk contexts (health records, government IDs)
 
 </details>
 
