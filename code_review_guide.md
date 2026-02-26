@@ -423,6 +423,9 @@ Never log or expose:
 <details>
 <summary>SSRF / outbound URL fetch safety</summary>
 
+- **SSRF (Server-Side Request Forgery)** — an attack where the attacker tricks your server into making HTTP requests on their behalf, often targeting internal services unreachable from the internet
+- **Outbound URL fetch safety** — the practice of validating any URL your server fetches before making the request, to prevent SSRF and related abuses
+
 **Requirement:** Fetch a URL provided by the user to generate a link preview.
 
 ❌ Bad — fetches any URL including internal services:
@@ -444,6 +447,14 @@ public String fetchPreview(String url) throws IOException {
     return httpClient.get(url);
 }
 ```
+
+The example blocks private addresses, but a production-safe implementation should also check:
+
+- **scheme** — only allow `http` / `https`; reject `file://`, `ftp://`, `gopher://`, etc.
+- **redirects** — re-validate the destination after each redirect; a public URL can redirect to an internal address
+- **response size** — enforce a max bytes limit to prevent memory exhaustion from large payloads
+- **timeout** — set a short connect + read timeout to prevent slow-response abuse
+- **domain allowlist** — if the use case permits, restrict to a known set of trusted domains entirely
 
 </details>
 
