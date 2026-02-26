@@ -378,6 +378,13 @@ An attacker embeds a hidden auto-submitting form on a malicious site. When a log
 
 Check: is the endpoint state-changing? Does the app use cookie auth? If yes, CSRF protection is required.
 
+Popular protection methods:
+
+- **CSRF token** — server generates a per-session token, embedded in forms/headers (`X-CSRF-Token`), validated on every state-changing request (default in Spring Security)
+- **SameSite cookie** — set `SameSite=Strict` or `SameSite=Lax` on the session cookie so browsers block it from cross-origin requests
+- **Custom request header** — require a header (e.g. `X-Requested-With: XMLHttpRequest`) that browsers cannot add automatically in cross-origin form posts
+- **Double submit cookie** — send the CSRF token as both a cookie and a request parameter; validate they match server-side
+
 </details>
 
 <details>
