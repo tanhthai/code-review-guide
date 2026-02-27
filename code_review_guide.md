@@ -199,7 +199,8 @@ Ask: could this change break something that currently works, even outside the fi
 - Sensitive data + secrets + safe logging
 - SSRF / outbound URL fetch safety
 - File upload safety
-- Dependency/config risks + rate limiting
+- Rate limiting
+- Dependency/config risks
 
 **Security must be reviewed early — not as an afterthought.**
 
@@ -465,6 +466,8 @@ The example blocks private addresses, but a production-safe implementation shoul
 
 ❌ Bad — no type check, no size limit, path traversal risk:
 
+- **Path traversal** — an attack where a user-supplied filename contains `../` sequences to escape the intended directory and write files to arbitrary locations on the server (e.g. `../../etc/cron.d/backdoor`)
+
 ```java
 public void uploadFile(MultipartFile file) throws IOException {
     Path path = Paths.get("/uploads/" + file.getOriginalFilename()); // Path traversal: ../../../etc/passwd
@@ -493,13 +496,24 @@ public void uploadFile(MultipartFile file) throws IOException {
 </details>
 
 <details>
-<summary>Dependency/config risks + rate limiting</summary>
+<summary>Rate limiting</summary>
 
 **Scenario:** The PR adds a new POST /api/send-email endpoint backed by a third-party email provider. No rate limiting is applied.
 
 An attacker can call it thousands of times per minute — racking up costs, burning through provider quotas, and potentially using the endpoint for spam.
 
-Check: are new public endpoints protected by rate limiting? Are new dependencies pinned to a specific version and free of known CVEs (check with `mvn dependency-check`)?
+Check: is this a new public or unauthenticated endpoint? If yes, rate limiting is required.
+
+</details>
+
+<details>
+<summary>Dependency/config risks</summary>
+
+- **CVE (Common Vulnerabilities and Exposures)** — a public registry of known security flaws in software libraries; a library with a CVE may allow an attacker to exploit your app through that dependency
+
+**Scenario:** The PR adds a new library `com.example:imageparser:2.1.0`. That version has a known remote code execution CVE. The build passes, the feature works — but the app is now vulnerable.
+
+Check: are new dependencies pinned to a specific version and free of known CVEs? (For Java/Maven projects, scan with `mvn dependency-check`.) Are credentials or API keys stored in environment variables or a secrets manager — not hardcoded in source files or committed to the repo?
 
 </details>
 </blockquote>
