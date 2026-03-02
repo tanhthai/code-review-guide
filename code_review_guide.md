@@ -896,7 +896,7 @@ public class User {
 }
 ```
 
-✅ Good — domain entity is pure; persistence is handled by a repository:
+✅ Good — domain entity is pure; insertion is delegated to the service layer via a repository:
 
 ```java
 public class User {
@@ -906,6 +906,19 @@ public class User {
 }
 
 public interface UserRepository extends JpaRepository<User, Long> {}
+
+@Service
+public class UserService {
+    private final UserRepository userRepository;
+
+    public UserService(UserRepository userRepository) {
+        this.userRepository = userRepository;
+    }
+
+    public User createUser(User user) {
+        return userRepository.save(user); // persistence handled here, not inside User
+    }
+}
 ```
 
 </details>
