@@ -564,9 +564,13 @@ public List<String> findDuplicates(List<String> emails) {
 ```java
 public List<String> findDuplicates(List<String> emails) {
     Set<String> seen = new HashSet<>();
-    return emails.stream()
-        .filter(e -> !seen.add(e))
-        .collect(Collectors.toList());
+    List<String> duplicates = new ArrayList<>();
+    for (String email : emails) {
+        if (!seen.add(email)) { // add() returns false if already present
+            duplicates.add(email);
+        }
+    }
+    return duplicates;
 }
 ```
 
@@ -615,8 +619,8 @@ public ResponseEntity<byte[]> generateReport(@RequestBody ReportRequest request)
 ```java
 @PostMapping("/reports/generate")
 public ResponseEntity<String> generateReport(@RequestBody ReportRequest request) {
-    String jobId = reportService.scheduleReportGeneration(request);
-    return ResponseEntity.accepted().body(jobId);
+    String jobId = reportService.enqueueReportGeneration(request); // queued for background processing — returns immediately
+    return ResponseEntity.accepted().body(jobId); // 202 Accepted: caller polls with jobId to check when ready
 }
 ```
 
@@ -706,31 +710,73 @@ Stateful in-memory caches must be externalised (Redis, DB) for multi-instance sa
 <details>
 <summary>Any shared mutable state? / Thread-safe?</summary>
 
-**Requirement:** Track the number of active requests.
+**1. Lost update** — two threads read and write the same variable simultaneously; one update is overwritten:
 
-❌ Bad — plain `int` is not thread-safe:
+❌ Bad — `count++` is three steps (read → add → write) and can be interrupted in between:
 
 ```java
 @Service
 public class RequestCounter {
-    private int count = 0; // Race condition under concurrent access
+    private int count = 0;
 
-    public void increment() { count++; }
-    public int getCount() { return count; }
+    public void increment() { count++; } // Thread A and B both read 5, both write 6 — one increment lost
 }
 ```
 
-✅ Good — use an atomic type:
+✅ Good — `AtomicInteger` makes the entire read-add-write unbreakable:
 
 ```java
 @Service
 public class RequestCounter {
     private final AtomicInteger count = new AtomicInteger(0);
 
-    public void increment() { count.incrementAndGet(); }
-    public int getCount() { return count.get(); }
+    public void increment() { count.incrementAndGet(); } // single atomic operation
 }
 ```
+
+**2. Visibility** — one thread writes a value, another thread never sees the update due to CPU cache:
+
+❌ Bad — `running = false` may stay in CPU cache; the loop in another thread never stops:
+
+```java
+private boolean running = true;
+
+public void stop() { running = false; }         // Thread A writes
+public void run()  { while (running) { ... } }  // Thread B may read stale cached value
+```
+
+✅ Good — `volatile` forces every read to go directly to main memory:
+
+```java
+private volatile boolean running = true;
+
+public void stop() { running = false; }
+public void run()  { while (running) { ... } }
+```
+
+**3. Non-thread-safe collections** — `HashMap` and `ArrayList` are not safe for concurrent reads and writes:
+
+❌ Bad — concurrent writes corrupt entries or throw `ConcurrentModificationException`:
+
+```java
+private final Map<String, User> cache = new HashMap<>();
+
+public void addToCache(String key, User user) {
+    cache.put(key, user); // Two threads writing simultaneously → corrupted state
+}
+```
+
+✅ Good — `ConcurrentHashMap` handles concurrent access safely:
+
+```java
+private final Map<String, User> cache = new ConcurrentHashMap<>();
+
+public void addToCache(String key, User user) {
+    cache.put(key, user); // thread-safe
+}
+```
+
+For check-then-act race conditions involving database state, see **Any race condition risk?** below.
 
 </details>
 
