@@ -1042,6 +1042,15 @@ public class OrderService {
 </details>
 
 <details>
+<summary>Business logic separated? / Pure logic extractable?</summary>
+
+**Scenario:** A controller method fetches data, applies pricing rules, formats the response, and sends an audit event — all inline. There is no way to test the pricing logic without spinning up the full HTTP stack.
+
+When business logic is embedded inside framework callbacks (controllers, listeners, batch processors), it cannot be unit-tested in isolation. Extract it into a plain service or domain method that takes inputs and returns outputs, with no framework dependencies.
+
+</details>
+
+<details>
 <summary>No hidden side effects?</summary>
 
 ❌ Bad — calculation method secretly writes to cache and audit log:
@@ -1095,20 +1104,74 @@ public class DiscountService {
 </details>
 
 <details>
-<summary>Business logic separated? / Pure logic extractable?</summary>
-
-**Scenario:** A controller method fetches data, applies pricing rules, formats the response, and sends an audit event — all inline. There is no way to test the pricing logic without spinning up the full HTTP stack.
-
-When business logic is embedded inside framework callbacks (controllers, listeners, batch processors), it cannot be unit-tested in isolation. Extract it into a plain service or domain method that takes inputs and returns outputs, with no framework dependencies.
-
-</details>
-
-<details>
 <summary>Mocking straightforward?</summary>
 
 **Scenario:** A service depends on `new EmailClient("smtp.internal", 587, true, "user", "pass")` constructed inline. To test the service, you'd need a real SMTP server.
 
 If mocking a dependency requires more setup than the test itself, the dependency is too tightly bound. Depend on an interface (`EmailSender`), inject it, and mock the interface in tests with a single line.
+
+</details>
+
+<details>
+<summary>⊕ Bonus — Recommended code organisation for testability (Spring web app)</summary>
+
+> This section is supplementary to the checklist above. It provides a concrete reference architecture for Spring web apps that makes each layer independently testable.
+
+Structure code into 4 layers. Each layer has a single concern — making each independently testable.
+
+```
+src/
+└── main/java/com/yourapp/
+    ├── controller/                    ← HTTP in/out only
+    │   └── OrderController.java
+    ├── application/                   ← use-case orchestration
+    │   └── PlaceOrderUseCase.java
+    ├── domain/                        ← pure business logic, no framework
+    │   ├── Order.java
+    │   ├── OrderRepository.java       ← interface (domain-owned)
+    │   └── OrderPlacedEvent.java
+    └── infrastructure/                ← DB, messaging, external APIs
+        ├── JpaOrderRepository.java    ← implements OrderRepository
+        └── SnsOrderEventPublisher.java
+```
+
+**What each layer does and how to test it:**
+
+| Layer | Responsibility | Depends on | Test type | Setup needed |
+|---|---|---|---|---|
+| `domain/` | Business rules, pure logic | nothing | Unit test | `new Order(...)` — no mocks, no Spring |
+| `application/` | Orchestrate: load → execute → save → publish | `domain/` interfaces only | Unit test with mocks | Mock `OrderRepository`, mock publisher |
+| `controller/` | Parse HTTP request, return response | `application/` | `@WebMvcTest` slice | Mock `PlaceOrderUseCase` only |
+| `infrastructure/` | DB queries, SNS, SES, external APIs | `domain/` (implements its interfaces) | Integration test | Real DB via Testcontainers |
+
+> **Dependency rule:** `application/` never imports `infrastructure/` classes directly — it depends on the repository *interface* defined in `domain/`, and Spring injects the infrastructure implementation at runtime. This keeps the application layer testable without a real DB.
+
+**The key rule:** the further inward the layer, the cheaper the test.
+
+```java
+// domain/ — zero dependencies, tested with plain objects
+@Test
+void order_shouldApplyBulkDiscount_whenTotalExceeds10000() {
+    Order order = new Order(List.of(new Item("A", 12000.0)));
+    assertThat(order.getFinalTotal()).isEqualTo(10800.0); // no Spring, no mock
+}
+
+// application/ — mock the boundaries, test the orchestration
+@Test
+void placeOrder_shouldSaveAndPublishEvent() {
+    when(orderRepository.save(any())).thenReturn(savedOrder);
+    useCase.execute(request);
+    verify(eventPublisher).publish(any(OrderPlacedEvent.class));
+}
+
+// controller/ — mock the use case, test HTTP mapping only
+@Test
+void POST_orders_shouldReturn201_onSuccess() throws Exception {
+    when(placeOrderUseCase.execute(any())).thenReturn(orderId);
+    mockMvc.perform(post("/orders").contentType(APPLICATION_JSON).content(body))
+           .andExpect(status().isCreated());
+}
+```
 
 </details>
 </blockquote>
