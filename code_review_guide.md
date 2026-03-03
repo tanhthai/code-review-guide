@@ -1197,6 +1197,33 @@ void POST_orders_shouldReturn201_onSuccess() throws Exception {
 
 <blockquote>
 <details>
+<summary>Main flows covered?</summary>
+
+**Scenario:** A checkout feature is merged with tests only for the pricing logic. The full flow — add to cart → apply coupon → pay → receive confirmation — has no end-to-end or integration test.
+
+If a main user journey has no test coverage, a future change anywhere in that path can break it silently.
+
+</details>
+
+<details>
+<summary>Edge cases tested?</summary>
+
+**Scenario:** A `calculateDiscount()` method is tested with a typical order of $50. But there are no tests for a $0 order, a negative price, or an empty item list.
+
+Ask: what are the boundary values? What happens at zero, null, empty, max, and min?
+
+</details>
+
+<details>
+<summary>Failure cases tested?</summary>
+
+**Scenario:** The PR adds tests for the happy path — a successful payment. But there are no tests for what happens when the payment gateway is down, when the card is declined, or when the request times out.
+
+Failure paths are where bugs cause the most damage. For every success test, ask: what is the corresponding failure test?
+
+</details>
+
+<details>
 <summary>Tests validate behavior (not implementation details)?</summary>
 
 ❌ Bad — test verifies a method was called, not what the user experiences:
@@ -1218,33 +1245,6 @@ void createOrder_shouldReturnOrderWithCorrectTotal() {
     assertThat(order.getTotal()).isEqualTo(expectedTotal);
 }
 ```
-
-</details>
-
-<details>
-<summary>Failure cases tested?</summary>
-
-**Scenario:** The PR adds tests for the happy path — a successful payment. But there are no tests for what happens when the payment gateway is down, when the card is declined, or when the request times out.
-
-Failure paths are where bugs cause the most damage. For every success test, ask: what is the corresponding failure test?
-
-</details>
-
-<details>
-<summary>Edge cases tested?</summary>
-
-**Scenario:** A `calculateDiscount()` method is tested with a typical order of $50. But there are no tests for a $0 order, a negative price, or an empty item list.
-
-Ask: what are the boundary values? What happens at zero, null, empty, max, and min?
-
-</details>
-
-<details>
-<summary>Main flows covered?</summary>
-
-**Scenario:** A checkout feature is merged with tests only for the pricing logic. The full flow — add to cart → apply coupon → pay → receive confirmation — has no end-to-end or integration test.
-
-If a main user journey has no test coverage, a future change anywhere in that path can break it silently.
 
 </details>
 
@@ -1280,6 +1280,17 @@ Unit tests alone cannot catch integration failures. Ask: is there a layer bounda
 
 <blockquote>
 <details>
+<summary>Code understandable in 6 months?</summary>
+
+This is the overarching goal of every point in this section. The "6 months" heuristic captures the reality that even the original author forgets the context behind decisions they made after a few months. If understanding the code requires knowledge that only existed in someone's head at the time of writing, it becomes a maintenance burden.
+
+Ask: could a developer — including future-you — read this without needing to ask anyone what it does or why?
+
+The number is illustrative, not exact. Some teams say "a new hire tomorrow", others say "a stranger next year". The point is the same: **code is read far more than it is written**, so clarity must survive beyond the moment of authorship. Every other point in this section — naming, method length, nesting depth, dead code, comments — is a specific way to answer this question with "yes".
+
+</details>
+
+<details>
 <summary>Naming meaningful and domain-consistent?</summary>
 
 ❌ Bad — abbreviated names with no domain meaning:
@@ -1302,6 +1313,15 @@ public double calculateOrderTotal(User customer, List<Item> items, boolean isPre
     return isPremiumDiscount ? subtotal * 0.9 : subtotal;
 }
 ```
+
+</details>
+
+<details>
+<summary>Methods not too long?</summary>
+
+**Scenario:** A `processCheckout()` method is 200 lines long. It validates input, applies coupons, calculates tax, charges the card, sends an email, and updates inventory — all inline.
+
+A method should do one thing. If you need to scroll to read it, or if you need a comment to mark sections ("// step 1", "// step 2"), it should be split. Each extracted method becomes independently readable and testable.
 
 </details>
 
@@ -1338,6 +1358,15 @@ public void processPayment(Payment payment) {
 </details>
 
 <details>
+<summary>No dead code?</summary>
+
+**Scenario:** The PR contains a `legacyCalculateShipping()` method that is never called anywhere. It was replaced three months ago but never deleted.
+
+Dead code creates confusion — future readers wonder if it's intentional, if it's needed, or if removing it will break something. If it is unused, delete it. Version control preserves history.
+
+</details>
+
+<details>
 <summary>Complex logic explained?</summary>
 
 ❌ Bad — the magic number and formula are unexplained:
@@ -1353,24 +1382,6 @@ double adjustedScore = rawScore * 0.85 + (completionRate * 15);
 // Defined in product spec v2.3 — do not change without updating the spec
 double adjustedScore = rawScore * 0.85 + (completionRate * 15);
 ```
-
-</details>
-
-<details>
-<summary>No dead code?</summary>
-
-**Scenario:** The PR contains a `legacyCalculateShipping()` method that is never called anywhere. It was replaced three months ago but never deleted.
-
-Dead code creates confusion — future readers wonder if it's intentional, if it's needed, or if removing it will break something. If it is unused, delete it. Version control preserves history.
-
-</details>
-
-<details>
-<summary>Methods not too long?</summary>
-
-**Scenario:** A `processCheckout()` method is 200 lines long. It validates input, applies coupons, calculates tax, charges the card, sends an email, and updates inventory — all inline.
-
-A method should do one thing. If you need to scroll to read it, or if you need a comment to mark sections ("// step 1", "// step 2"), it should be split. Each extracted method becomes independently readable and testable.
 
 </details>
 </blockquote>
