@@ -1408,6 +1408,15 @@ double adjustedScore = rawScore * 0.85 + (completionRate * 15);
 
 <blockquote>
 <details>
+<summary>DB load increased?</summary>
+
+**Scenario:** The PR adds a new background job that runs every 5 minutes and queries the `orders` table for all records modified in the last 24 hours — joining three tables with no pagination.
+
+This query runs fine in staging with 10,000 rows. In production with 50 million rows, it locks rows, spikes CPU, and degrades latency for all other queries. Ask: does this add a new query pattern? What is the data volume? Does it need batching?
+
+</details>
+
+<details>
 <summary>Index needed?</summary>
 
 **Requirement:** Filter orders by status for an admin dashboard.
@@ -1428,6 +1437,33 @@ CREATE INDEX idx_orders_status ON orders(status);
 ```
 
 Any new column used in a `WHERE`, `JOIN`, or `ORDER BY` clause should be evaluated for an index.
+
+</details>
+
+<details>
+<summary>Cache invalidation correct?</summary>
+
+**Scenario:** The PR adds caching for a user's profile using `userId` as the cache key. But when a user updates their email, the cache is never invalidated. Users see stale data until the TTL expires.
+
+Check: when data is mutated, is the corresponding cache entry evicted or updated? Are cache keys specific enough to avoid cross-user collisions?
+
+</details>
+
+<details>
+<summary>Message queue impact?</summary>
+
+**Scenario:** The PR publishes an event to a queue on every user action, including mouseover events captured from the frontend. At 100,000 concurrent users, this floods the queue with millions of low-value messages per minute, crowding out critical order events.
+
+Ask: what is the publish rate at production scale? Are consumer groups correctly isolated? Is there a dead-letter queue for failed messages?
+
+</details>
+
+<details>
+<summary>Cloud cost increased?</summary>
+
+**Scenario:** The PR stores a full JSON snapshot of the user object in a DynamoDB record on every login. The object is 50KB and users log in frequently. At scale, this multiplies read/write costs significantly compared to storing only the fields actually needed.
+
+Ask: does this change increase storage, read/write units, egress, or compute in a way that compounds at scale?
 
 </details>
 
@@ -1459,42 +1495,6 @@ public void processPayment(PaymentRequest request) {
     }
 }
 ```
-
-</details>
-
-<details>
-<summary>DB load increased?</summary>
-
-**Scenario:** The PR adds a new background job that runs every 5 minutes and queries the `orders` table for all records modified in the last 24 hours — joining three tables with no pagination.
-
-This query runs fine in staging with 10,000 rows. In production with 50 million rows, it locks rows, spikes CPU, and degrades latency for all other queries. Ask: does this add a new query pattern? What is the data volume? Does it need batching?
-
-</details>
-
-<details>
-<summary>Cache invalidation correct?</summary>
-
-**Scenario:** The PR adds caching for a user's profile using `userId` as the cache key. But when a user updates their email, the cache is never invalidated. Users see stale data until the TTL expires.
-
-Check: when data is mutated, is the corresponding cache entry evicted or updated? Are cache keys specific enough to avoid cross-user collisions?
-
-</details>
-
-<details>
-<summary>Message queue impact?</summary>
-
-**Scenario:** The PR publishes an event to a queue on every user action, including mouseover events captured from the frontend. At 100,000 concurrent users, this floods the queue with millions of low-value messages per minute, crowding out critical order events.
-
-Ask: what is the publish rate at production scale? Are consumer groups correctly isolated? Is there a dead-letter queue for failed messages?
-
-</details>
-
-<details>
-<summary>Cloud cost increased?</summary>
-
-**Scenario:** The PR stores a full JSON snapshot of the user object in a DynamoDB record on every login. The object is 50KB and users log in frequently. At scale, this multiplies read/write costs significantly compared to storing only the fields actually needed.
-
-Ask: does this change increase storage, read/write units, egress, or compute in a way that compounds at scale?
 
 </details>
 </blockquote>
