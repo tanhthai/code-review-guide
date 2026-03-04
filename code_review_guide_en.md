@@ -59,6 +59,18 @@ public double calculateDiscount(User user, double price) {
 
 The bad version compiles and looks clean — but it silently violates the business requirement.
 
+**Tip — scenario matrix approach:** Before reviewing the code, list every scenario implied by the requirement, then walk through the code for each one.
+
+| Scenario | Expected | Does the code handle it? |
+|---|---|---|
+| Premium user with valid price | 20% discount | ✅ |
+| Regular user with valid price | 10% discount | ✅ |
+| Premium user with price = 0 | 0 | ? |
+| Null user | Error / handled | ? |
+| Negative price | Error / handled | ? |
+
+Any cell that is "?" becomes a review comment. This turns a vague "does it solve the correct problem?" into a concrete checklist.
+
 </details>
 
 <details>
