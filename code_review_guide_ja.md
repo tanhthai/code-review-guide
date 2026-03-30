@@ -701,6 +701,7 @@ public CompletableFuture<List<Post>> getFeed(Long userId) {
 - 水平スケーリングに対応しているか？
 - 非同期が必要か？
 - レースコンディションのリスクはないか？
+- リトライに対して安全か（冪等性）？
 
 **バックエンド / 分散システムでは特に重要です。**
 
@@ -842,6 +843,49 @@ public void deductBalance(Long userId, double amount) {
 メールサービスが遅い場合や一時的にダウンしている場合、チェックアウトがハングするか、完全に失敗します。ユーザーの支払いは処理されましたが、エラーが表示されます。
 
 確認メールはfire-and-forgetです。ドメインイベントを公開するかメッセージキューにプッシュし、チェックアウト結果をすぐに返してください。
+
+</details>
+
+<details>
+<summary>リトライに対して安全か（冪等性）？</summary>
+
+AWS SQSなどのメッセージブローカーは**少なくとも1回の配信（at-least-once delivery）**を保証します。ハンドラーがクラッシュしたりタイムアウトしてメッセージが削除される前に失敗すると、SQSはメッセージを再配信します。ハンドラーは最初から再実行され、最初の試行でも完了した副作用を含めて再実行されます。
+
+**シナリオ:** ハンドラーがDBに注文を保存し、その後支払いゲートウェイを呼び出します。支払い呼び出しがタイムアウト例外をスローします。SQSはメッセージを再配信します。リトライ時にDB挿入が再実行され、重複注文が作成されてから2回目の請求が試みられます。
+
+❌ 悪い例 — 再実行に対するガードなし。リトライ時に重複レコードが発生:
+
+```java
+@SqsListener("order-events")
+public void handleOrderEvent(OrderMessage message) {
+    orderRepository.save(new Order(message.getOrderId(), message.getAmount())); // リトライ時に再実行 → 重複
+    paymentService.charge(message.getOrderId(), message.getAmount());           // 二重請求の可能性
+}
+```
+
+✅ 良い例 — 処理前にメッセージIDで重複チェック:
+
+```java
+@SqsListener("order-events")
+public void handleOrderEvent(OrderMessage message) {
+    if (orderRepository.existsByMessageId(message.getMessageId())) {
+        return; // 処理済み — スキップしても安全
+    }
+    orderRepository.save(new Order(message.getOrderId(), message.getAmount(), message.getMessageId()));
+    paymentService.charge(message.getOrderId(), message.getAmount());
+}
+```
+
+または**upsert**（`messageId`をキーとした`INSERT ... ON CONFLICT DO NOTHING`）を使用して、DB自体がアトミックに重複を拒否するようにします。
+
+ロジックをリトライ安全にするための一般的なパターン:
+
+- **冪等性キーチェック** — 初回成功時にメッセージ/リクエストIDを保存し、既に処理済みの場合はスキップ
+- **upsertの使用** — `INSERT ... ON CONFLICT DO NOTHING / DO UPDATE`で重複行を防ぐ
+- **条件付き更新** — レコードが期待される状態の場合のみ更新（例: `WHERE status = 'PENDING'`）
+- **外部APIガード** — 新しい呼び出しを行う前に外部呼び出しが既に成功したか確認（例: 新規作成前に注文IDで請求を検索）
+
+問い: このハンドラーが同じ入力で2回呼ばれた場合、結果は変わるか？
 
 </details>
 </blockquote>

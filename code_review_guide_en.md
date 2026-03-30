@@ -701,6 +701,7 @@ public CompletableFuture<List<Post>> getFeed(Long userId) {
 - Safe for horizontal scaling?
 - Async needed?
 - Any race condition risk?
+- Safe to retry (idempotent)?
 
 **Especially important in backend / distributed systems.**
 
@@ -842,6 +843,49 @@ For multi-instance coordination, use distributed locking (Redis `SETNX`, DB advi
 If the email service is slow or temporarily down, the checkout hangs — or fails entirely. The user's payment went through, but they see an error.
 
 Confirmation emails are fire-and-forget. Publish a domain event or push to a message queue and return the checkout result immediately.
+
+</details>
+
+<details>
+<summary>Safe to retry (idempotent)?</summary>
+
+Message brokers like AWS SQS use **at-least-once delivery** — if a handler crashes or times out before the message is deleted, SQS redelivers it. The handler runs again from the beginning, including any side effects that already completed in the first attempt.
+
+**Scenario:** A handler saves an order to the DB, then calls the payment gateway. The payment call throws a timeout exception. SQS redelivers the message. On retry, the DB insert runs again — creating a duplicate order — before a second charge attempt is made.
+
+❌ Bad — no guard against re-execution; duplicate records on retry:
+
+```java
+@SqsListener("order-events")
+public void handleOrderEvent(OrderMessage message) {
+    orderRepository.save(new Order(message.getOrderId(), message.getAmount())); // runs again on retry → duplicate
+    paymentService.charge(message.getOrderId(), message.getAmount());           // may double-charge
+}
+```
+
+✅ Good — deduplicate using the message ID before doing any work:
+
+```java
+@SqsListener("order-events")
+public void handleOrderEvent(OrderMessage message) {
+    if (orderRepository.existsByMessageId(message.getMessageId())) {
+        return; // already processed — safe to skip
+    }
+    orderRepository.save(new Order(message.getOrderId(), message.getAmount(), message.getMessageId()));
+    paymentService.charge(message.getOrderId(), message.getAmount());
+}
+```
+
+Or use an **upsert** (`INSERT ... ON CONFLICT DO NOTHING` keyed on `messageId`) so the DB itself rejects duplicates atomically.
+
+Common patterns to make logic retry-safe:
+
+- **Idempotency key check** — store the message/request ID on first success; skip if already seen
+- **Upsert instead of insert** — `INSERT ... ON CONFLICT DO NOTHING / DO UPDATE` prevents duplicate rows
+- **Conditional updates** — only update if the record is still in the expected state (`WHERE status = 'PENDING'`)
+- **External API guard** — check if the external call already succeeded before calling again (e.g. look up the charge by order ID before creating a new one)
+
+Ask: if this handler is called twice with the same input, does the outcome change?
 
 </details>
 </blockquote>
