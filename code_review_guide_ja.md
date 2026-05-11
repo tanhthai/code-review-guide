@@ -12,6 +12,7 @@
 8. [可読性と保守性](#可読性と保守性)
 9. [インフラとコスト影響](#インフラとコスト影響上級レビュー)
 10. [スタイルとフォーマット](#スタイルとフォーマット最後に)
+11. [実装意図と代替案の分析](#実装意図と代替案の分析)
 
 ---
 
@@ -1598,6 +1599,209 @@ Lint警告は抑制ではなく修正すべきです。抑制が本当に必要�
 **シナリオ:** 支払いレスポンスを処理するメソッドで変数が`data`と命名されています。`paymentResponse`にリネームするとコストゼロで即座に明確になります。
 
 軽微な命名の改善はコメントする価値がありますが、PRをブロックすべきではありません。提案はするが、要求はしないでください。正確性、セキュリティ、アーキテクチャの問題のためにブロッキングフィードバックを保留してください。
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
+## 実装意図と代替案の分析
+
+> *どのように*ではなく*なぜ*を問う。
+
+- なぜこの実装方法を選んだのか？
+- なぜここに配置されているのか（このレイヤー / クラス / モジュール）？
+- このアプローチは本当に目標を達成しているのか？
+- コメントする前にそれらの問いを自分で調査する
+- 具体的なメリットがある場合のみ代替案を提案する
+
+**意図を問うことで、隠れた前提と見落とされた解決策が浮かび上がります。**
+
+<details>
+<summary>詳細</summary>
+
+<blockquote>
+<details>
+<summary>なぜこのアプローチを選んだのか？</summary>
+
+解決策を受け入れる前に、選ばれた手法が問題に対して適切なツールであるかどうかを問います。これはスタイルの問題ではなく、根本的により良いアプローチが存在するかどうかの問題です。
+
+形成すべき問い:
+
+- この手法は要件を満たす最もシンプルなものか？
+- 標準ライブラリやパターンで排除できる偶発的な複雑さ（カスタムロジック、余分な抽象化）を導入していないか？
+- 問題を正しい場所で解決しているのか、それとも深い問題を回避しているのか？
+
+**シナリオ:** PRは`notifications`テーブルを10秒ごとにポーリングし、保留中のメールを送信するスケジュールジョブを追加します。
+
+*なぜという問い:* なぜスケジュールでポーリングするのか？通知行を作成するイベントに反応できないのか？
+
+*自己調査:* ポーリングアプローチは機能しますが、常にDBの負荷を増加させ、インターバルに比例したレイテンシを生みます。通知行はシステムにすでに存在するドメインイベントの結果として作成されています。
+
+*代替案:* 行が挿入されたときに`NotificationCreated`イベントを公開し、非同期リスナーでそれを消費します。メールは即座に送信され、DBポーリングが不要になり、スケジューラーとテーブルの結合が消えます。
+
+❌ 元の実装 — ポーリングアプローチ:
+
+```java
+@Scheduled(fixedDelay = 10_000)
+public void sendPendingNotifications() {
+    List<Notification> pending = notificationRepository.findByStatus("PENDING");
+    pending.forEach(n -> {
+        emailService.send(n);
+        n.setStatus("SENT");
+        notificationRepository.save(n);
+    });
+}
+```
+
+✅ 代替案 — イベント駆動:
+
+```java
+@TransactionalEventListener
+public void onNotificationCreated(NotificationCreatedEvent event) {
+    emailService.send(event.getNotification());
+}
+```
+
+代替案はポーリングループを排除し、DBの負荷を下げ、トリガーアクションから数ミリ秒以内にメールを送信します。
+
+</details>
+
+<details>
+<summary>なぜここに配置されているのか？</summary>
+
+配置場所は意味を持ちます。間違ったレイヤー、クラス、またはモジュールにあるメソッドは、将来の読者の所有権の理解を誤らせ、テストや再利用を困難にします。
+
+形成すべき問い:
+
+- なぜこのクラスがこの責任を持つのか？
+- なぜこのロジックがこのレイヤー（コントローラー / サービス / ドメイン / インフラ）にあるのか？
+- なぜこのユーティリティメソッドが共有の場所に置かれずにここで重複しているのか？
+
+**シナリオ:** PRは`calculateAge(LocalDate birthDate)`メソッドを直接`UserController`の中に追加します。
+
+*なぜという問い:* 純粋なドメイン計算である年齢計算が、なぜHTTPレイヤーにあるのか？他に誰がこれを必要とするかもしれないか？
+
+*自己調査:* 年齢計算にはHTTPへの依存がありません。患者、従業員、または複数の機能にわたる任意の人エンティティに適用できる純粋なビジネスロジックです。コントローラーに置くと、HTTPを経由せずにはアクセスできず、他の呼び出し元からも見えなくなります。
+
+*代替案:* `User`ドメインオブジェクトまたは`DateUtils`共有ユーティリティに移動します。
+
+❌ 元の実装 — ロジックがコントローラーに埋め込まれている:
+
+```java
+@RestController
+public class UserController {
+    @GetMapping("/users/{id}/age")
+    public int getUserAge(@PathVariable Long id) {
+        User user = userService.findById(id);
+        return Period.between(user.getBirthDate(), LocalDate.now()).getYears(); // ドメインロジックがコントローラーに
+    }
+}
+```
+
+✅ 代替案 — ロジックがドメインオブジェクトにある:
+
+```java
+public class User {
+    public int getAge() {
+        return Period.between(this.birthDate, LocalDate.now()).getYears();
+    }
+}
+
+@RestController
+public class UserController {
+    @GetMapping("/users/{id}/age")
+    public int getUserAge(@PathVariable Long id) {
+        return userService.findById(id).getAge(); // コントローラーは委譲する
+    }
+}
+```
+
+これで、HTTPレイヤーなしでテスト可能になり、コードベース全体で再利用できます。
+
+</details>
+
+<details>
+<summary>このアプローチは本当に目標を達成しているのか？</summary>
+
+実装が構文的に正しく、アーキテクチャ的に健全であっても、機能が実際に必要とするものを達成できていない場合があります。この問いは意図と効果のギャップを埋めます。
+
+形成すべき問い:
+
+- この実装は述べられた目標を実際に達成しているのか、それとも単にそう見えるだけか？
+- メリットは直接的に提供されているのか、それとも成立しないかもしれない前提に依存しているのか？
+- よりシンプルな仕組みで目標を達成できないか？
+
+**シナリオ:** PRは「プロダクト検索を高速化する」ために`ProductService.getProduct()`にインメモリ`HashMap`キャッシュを追加します。
+
+*なぜという問い:* ここでキャッシュすることがなぜ役に立つのか？実際のボトルネックはどこにあるのか？目標は「高速なプロダクト検索」— これは正しいレバーか？
+
+*自己調査:* `ProductService`はSpringの`@Service`（シングルトン）です。その`HashMap`キャッシュは1つのJVMインスタンスに存在します。マルチインスタンスデプロイでは、各インスタンスが独立してキャッシュを構築し、キャッシュヒットはノード間で分散されます。さらに深刻なのは、別のエンドポイントからプロダクトが更新されるとき、このキャッシュは決して無効化されず、呼び出し元は無期限に古いデータを見続けます。
+
+*代替案:* すべてのインスタンスが同じデータを共有し、古いエントリが予測可能に期限切れになるように、共有のTTLベースキャッシュ（RedisまたはSpringの`@Cacheable`とエビクションポリシー）を使用します。
+
+❌ 元の実装 — 共有されず、無効化されないキャッシュ:
+
+```java
+@Service
+public class ProductService {
+    private final Map<Long, Product> cache = new HashMap<>();
+
+    public Product getProduct(Long id) {
+        return cache.computeIfAbsent(id, productRepository::findById);
+    }
+
+    public void updateProduct(Product product) {
+        productRepository.save(product); // キャッシュは決してクリアされない
+    }
+}
+```
+
+✅ 代替案 — 自動エビクションを伴う共有キャッシュ:
+
+```java
+@Service
+public class ProductService {
+    @Cacheable("products")
+    public Product getProduct(Long id) {
+        return productRepository.findById(id);
+    }
+
+    @CacheEvict(value = "products", key = "#product.id")
+    public void updateProduct(Product product) {
+        productRepository.save(product);
+    }
+}
+```
+
+代替案は目標（高速な検索）を達成し、インスタンス間で機能し、更新後もデータの一貫性を保ちます。
+
+</details>
+
+<details>
+<summary>コメントする前に自己調査する方法</summary>
+
+「なぜ」という問いをコメントとして上げるだけで自分で調査しないと、作業を著者に移すだけで価値を追加しません。レビュアーの仕事は尋問ではなく、調査することです。
+
+**プロセス:**
+
+1. **問いを形成する** — 具体的な「なぜ」を明確に表現する: *なぜこのメカニズム、なぜこの場所、なぜこれが目標を達成するのか*。
+2. **制約を調査する** — PRの説明、リンクされたチケット、周辺コードを確認する。著者には正当な理由があったかもしれない: フレームワークの制約、締め切り、別チームのAPIへの依存。
+3. **代替案を特定する** — より良い道が存在するなら、具体的に説明する: どのようなものか、どんなメリットをもたらすか、どんなトレードオフがあるか。
+4. **発見があった場合のみコメントする** — 調査によって元の選択が制約を考慮した上で合理的だったことが分かれば、その問いを取り下げる。本当の改善が存在するなら、すでに代替案のスケッチと一緒に上げる。
+
+**良い代替案ベースのコメントの例:**
+
+> `processOrder`がステータステーブルを5秒ごとにポーリングしていることに気づきました。ステータス変更は既存の`OrderStatusChanged`イベントによってトリガーされているので、そのイベントを直接消費してポーリングを排除できます。DBの負荷が下がり、レイテンシが〜5秒からほぼゼロになります。私が知らない制約（例: イベントがまだ信頼性に欠けるなど）があってポーリングの方が安全な場合もあるかもしれません — 議論する価値がありそうです。
+
+このコメントは:
+
+- 観察内容を述べている
+- 具体的な代替案を提案している
+- 考えられる制約を認めている
+- 変更を要求するのではなく、議論に招いている
 
 </details>
 </blockquote>

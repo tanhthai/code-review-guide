@@ -12,6 +12,7 @@ When raising review feedback, prioritize issues in this order — from highest b
 8. [Readability & Maintainability](#readability--maintainability)
 9. [Infrastructure & Cost Impact](#infrastructure--cost-impact-advanced-review)
 10. [Style & Formatting](#style--formatting-last)
+11. [Implementation Intent & Alternative Analysis](#implementation-intent--alternative-analysis)
 
 ---
 
@@ -1598,6 +1599,209 @@ Lint warnings should be fixed, not suppressed. If suppression is truly necessary
 **Scenario:** A variable is named `data` in a method that processes payment responses. Renaming it to `paymentResponse` costs nothing and makes the code immediately clearer.
 
 Minor naming improvements are worth a comment — but they should never block a PR. Suggest, don't require. Reserve blocking feedback for correctness, security, and architecture issues.
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
+## Implementation Intent & Alternative Analysis
+
+> Step back from *how* and ask *why*.
+
+- Why is the implementation this way?
+- Why is the code placed here (this layer / class / module)?
+- Why does this approach actually fulfill the goal?
+- Self-investigate those questions before commenting
+- Propose an alternative only when a concrete benefit exists
+
+**Questioning intent surfaces hidden assumptions and overlooked solutions.**
+
+<details>
+<summary>Further details</summary>
+
+<blockquote>
+<details>
+<summary>Why this approach?</summary>
+
+Before accepting a solution, ask whether the chosen mechanism is the right tool for the problem. This is not about style — it is about whether there is a fundamentally better path.
+
+Questions to form:
+
+- Is this approach the simplest one that satisfies the requirement?
+- Does it introduce accidental complexity (custom logic, extra abstractions) that a standard library or pattern would eliminate?
+- Does it solve the problem in the right place, or is it working around a deeper issue?
+
+**Scenario:** A PR adds a scheduled job that polls the `notifications` table every 10 seconds and sends pending emails.
+
+*Why questions:* Why poll on a schedule? Why not react to the event that creates the notification row?
+
+*Self-investigation:* The polling approach works but adds constant DB load and introduces latency proportional to the interval. The notification row is created as a result of a domain event — that event already exists in the system.
+
+*Alternative:* Publish a `NotificationCreated` event when the row is inserted and consume it in an async listener. Emails are sent immediately, DB polling is eliminated, and the coupling between the scheduler and the table disappears.
+
+❌ Original — polling approach:
+
+```java
+@Scheduled(fixedDelay = 10_000)
+public void sendPendingNotifications() {
+    List<Notification> pending = notificationRepository.findByStatus("PENDING");
+    pending.forEach(n -> {
+        emailService.send(n);
+        n.setStatus("SENT");
+        notificationRepository.save(n);
+    });
+}
+```
+
+✅ Alternative — event-driven:
+
+```java
+@TransactionalEventListener
+public void onNotificationCreated(NotificationCreatedEvent event) {
+    emailService.send(event.getNotification());
+}
+```
+
+The alternative eliminates the polling loop, reduces DB load, and sends emails within milliseconds of the triggering action.
+
+</details>
+
+<details>
+<summary>Why is it placed here?</summary>
+
+Location carries meaning. A method in the wrong layer, class, or module misleads future readers about ownership and makes the code harder to test and reuse.
+
+Questions to form:
+
+- Why does this class own this responsibility?
+- Why is this logic in this layer (controller / service / domain / infrastructure)?
+- Why is this utility method duplicated here instead of living in a shared location?
+
+**Scenario:** A PR adds a `calculateAge(LocalDate birthDate)` method directly inside `UserController`.
+
+*Why questions:* Why is an age calculation — a pure domain computation — inside the HTTP layer? Who else might need this?
+
+*Self-investigation:* Age calculation has no dependency on HTTP. It is pure business logic that could apply to patients, employees, or any person entity across multiple features. Placing it in the controller makes it unreachable without going through HTTP and invisible to other callers.
+
+*Alternative:* Move it to the `User` domain object or a `DateUtils` shared utility.
+
+❌ Original — logic buried in controller:
+
+```java
+@RestController
+public class UserController {
+    @GetMapping("/users/{id}/age")
+    public int getUserAge(@PathVariable Long id) {
+        User user = userService.findById(id);
+        return Period.between(user.getBirthDate(), LocalDate.now()).getYears(); // domain logic in controller
+    }
+}
+```
+
+✅ Alternative — logic on the domain object:
+
+```java
+public class User {
+    public int getAge() {
+        return Period.between(this.birthDate, LocalDate.now()).getYears();
+    }
+}
+
+@RestController
+public class UserController {
+    @GetMapping("/users/{id}/age")
+    public int getUserAge(@PathVariable Long id) {
+        return userService.findById(id).getAge(); // controller delegates
+    }
+}
+```
+
+Now the calculation is testable without the HTTP layer and reusable across the codebase.
+
+</details>
+
+<details>
+<summary>Why does it fulfill the goal?</summary>
+
+An implementation can be syntactically correct and architecturally sound, yet still fail to accomplish what the feature actually needs. This question closes the gap between intent and effect.
+
+Questions to form:
+
+- Does this implementation actually achieve the stated goal, or does it only appear to?
+- Is the benefit delivered directly, or does it depend on assumptions that may not hold?
+- Could the goal be achieved with a simpler mechanism?
+
+**Scenario:** A PR adds an in-memory `HashMap` cache on `ProductService.getProduct()` to "speed up product lookups."
+
+*Why questions:* Why does caching here help? Where is the actual bottleneck? The goal is "faster product lookups" — is this the right lever?
+
+*Self-investigation:* `ProductService` is a Spring `@Service` (singleton). Its `HashMap` cache lives in one JVM instance. In a multi-instance deployment, each instance builds its own cache independently and cache hits are split across nodes. More critically, when a product is updated via a different endpoint, this cache is never invalidated — callers will see stale data indefinitely.
+
+*Alternative:* Use a shared, TTL-based cache (Redis or Spring's `@Cacheable` with an eviction policy) so all instances share the same data and stale entries expire predictably.
+
+❌ Original — unshared, never-invalidated cache:
+
+```java
+@Service
+public class ProductService {
+    private final Map<Long, Product> cache = new HashMap<>();
+
+    public Product getProduct(Long id) {
+        return cache.computeIfAbsent(id, productRepository::findById);
+    }
+
+    public void updateProduct(Product product) {
+        productRepository.save(product); // cache is never cleared
+    }
+}
+```
+
+✅ Alternative — shared cache with automatic eviction:
+
+```java
+@Service
+public class ProductService {
+    @Cacheable("products")
+    public Product getProduct(Long id) {
+        return productRepository.findById(id);
+    }
+
+    @CacheEvict(value = "products", key = "#product.id")
+    public void updateProduct(Product product) {
+        productRepository.save(product);
+    }
+}
+```
+
+The alternative achieves the goal (faster lookups), works across instances, and keeps data consistent after updates.
+
+</details>
+
+<details>
+<summary>How to self-investigate before commenting</summary>
+
+Raising a "why" question as a review comment without investigating it first shifts work to the author without adding value. The reviewer's job is to investigate, not just interrogate.
+
+**The process:**
+
+1. **Form the question** — articulate the specific "why" clearly: *why this mechanism, why this location, why this fulfills the goal*.
+2. **Investigate constraints** — check the PR description, linked ticket, and surrounding code. The author may have had a good reason: a framework limitation, a deadline, a dependency on another team's API.
+3. **Identify the alternative** — if a better path exists, describe it concretely: what it looks like, what benefit it delivers, what trade-off it carries.
+4. **Comment only if there is a finding** — if the investigation reveals the original choice was well-reasoned given the constraints, drop the question. If a genuine improvement exists, raise it with the alternative already sketched out.
+
+**What a good alternative-based comment looks like:**
+
+> I noticed `processOrder` polls the status table every 5 seconds. Given that status changes are triggered by an existing `OrderStatusChanged` event, we could consume that event directly and eliminate the poll. That would reduce DB load and cut the latency from ~5s to near-zero. Constraints I'm not aware of (e.g. the event not being reliable yet) might make polling safer for now — worth discussing?
+
+This comment:
+
+- States the observation
+- Proposes a concrete alternative
+- Acknowledges possible constraints
+- Invites discussion rather than demanding a change
 
 </details>
 </blockquote>
