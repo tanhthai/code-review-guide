@@ -2116,6 +2116,7 @@ public class ProductService {
 - 不安定な依存関係をサーキットブレーカーが保護しているか？
 - 依存関係が利用不能な場合のグレースフルデグレードはあるか？
 - ヘルスチェックエンドポイントは依存関係の実際の状態を正確に反映しているか？
+- HTTPクライアントのURLは正しい形式か？（二重スラッシュなし、クエリパラメータはURLエンコード済み、設定ファイルのスキームが正しい）
 
 **明示的なフォールトトレランスがなければ、一つの遅い依存関係がサービス全体をダウンさせる可能性があります。**
 
@@ -2241,6 +2242,73 @@ management:
     redis:
       enabled: true
 ```
+
+</details>
+
+<details>
+<summary>HTTPクライアントのURLは正しい形式か？</summary>
+
+不正な形式のURLはサイレントに失敗するか、誤った結果を生じさせます。コードはコンパイルされ、リクエストも送信されますが、サーバーは404を返したり、呼び出しを誤ってルーティングしたり、クエリを誤解釈したりします。
+
+### 末尾スラッシュの不一致による二重スラッシュ
+
+❌ 悪い例 — ベースURLが`/`で終わり、パスも`/`で始まる場合、二重スラッシュが発生する：
+
+```java
+String baseUrl = "https://api.example.com/";
+String url = baseUrl + "/users/" + userId;
+// → https://api.example.com//users/123 — 多くのサーバーはこれを拒否するか、誤ってルーティングする
+```
+
+✅ 良い例 — パスの結合を正規化するURLビルダーを使用する：
+
+```java
+URI uri = UriComponentsBuilder.fromHttpUrl("https://api.example.com")
+    .path("/users/{id}")
+    .buildAndExpand(userId)
+    .toUri();
+// → https://api.example.com/users/123
+```
+
+### パスおよびクエリパラメータのURLエンコード
+
+❌ 悪い例 — ユーザー入力値を直接連結する。スペースや`&`文字が余分なパラメータを注入する：
+
+```java
+String url = "https://api.example.com/search?q=" + userQuery;
+// userQuery = "order status&admin=true" → 意図しない第2パラメータが注入される
+```
+
+✅ 良い例 — `queryParam()`を通じて値を渡す。ビルダーが自動的にURLエンコードする：
+
+```java
+URI uri = UriComponentsBuilder.fromHttpUrl("https://api.example.com")
+    .path("/search")
+    .queryParam("q", userQuery)  // エンコード済み: "order+status%26admin%3Dtrue"
+    .build()
+    .toUri();
+```
+
+`/`、`#`、スペースを含むパスセグメントもエンコードが必要です。値をパス文字列に直接補間するのではなく、`{プレースホルダー}`構文を使用して、ビルダーに展開とエンコードを任せてください。
+
+### 設定ファイルの正しいスキーム
+
+❌ 悪い例 — 環境設定でスキームが誤っているか欠落している。実行時にのみ失敗する：
+
+```yaml
+# application.yml
+payment-service.base-url: http://payments.internal          # HTTPSのみのサービスへのHTTP
+recommendation-service.base-url: recommendations.internal   # スキームなし — 起動時にMalformedURLException
+```
+
+✅ 良い例 — 下流サービスが受け入れるスキームと一致した完全なURLを使用する：
+
+```yaml
+payment-service.base-url: https://payments.internal
+recommendation-service.base-url: https://recommendations.internal
+```
+
+`http://`URLをHTTPSのみのエンドポイントに送信すると、通常はリダイレクトまたは接続エラーが返され、本番環境でのみ表面化します。設定ミスが静かに失敗するのではなく、即座に失敗するよう、アプリケーション起動時にベースURLを検証してください。
 
 </details>
 </blockquote>

@@ -2116,6 +2116,7 @@ This comment:
 - Circuit breaker protects unstable dependencies?
 - Graceful degradation when a dependency is unavailable?
 - Health check endpoints accurately reflect dependency status?
+- HTTP client URLs correctly formed? (no double slashes, query parameters URL-encoded, correct scheme in config)
 
 **Without explicit fault tolerance, a single slow dependency can bring down the entire service.**
 
@@ -2241,6 +2242,73 @@ management:
     redis:
       enabled: true
 ```
+
+</details>
+
+<details>
+<summary>HTTP client URLs correctly formed?</summary>
+
+Malformed URLs fail silently or produce wrong results — the code compiles, the request is sent, but the server returns a 404, misroutes the call, or misinterprets the query.
+
+### Double slash from trailing-slash mismatch
+
+❌ Bad — base URL ends with `/` and the path also starts with `/`; produces a double slash:
+
+```java
+String baseUrl = "https://api.example.com/";
+String url = baseUrl + "/users/" + userId;
+// → https://api.example.com//users/123 — most servers reject or silently misroute this
+```
+
+✅ Good — use a URL builder that normalises path joining:
+
+```java
+URI uri = UriComponentsBuilder.fromHttpUrl("https://api.example.com")
+    .path("/users/{id}")
+    .buildAndExpand(userId)
+    .toUri();
+// → https://api.example.com/users/123
+```
+
+### URL encoding for path and query parameters
+
+❌ Bad — user-supplied value concatenated directly; spaces and `&` characters inject extra parameters:
+
+```java
+String url = "https://api.example.com/search?q=" + userQuery;
+// userQuery = "order status&admin=true" → injects an unintended second parameter
+```
+
+✅ Good — pass values through `queryParam()`; the builder URL-encodes them automatically:
+
+```java
+URI uri = UriComponentsBuilder.fromHttpUrl("https://api.example.com")
+    .path("/search")
+    .queryParam("q", userQuery)  // encoded: "order+status%26admin%3Dtrue"
+    .build()
+    .toUri();
+```
+
+Path segments containing `/`, `#`, or spaces must also be encoded — use `{placeholder}` syntax and let the builder expand and encode them rather than interpolating the value directly into the path string.
+
+### Correct scheme in configuration
+
+❌ Bad — scheme is wrong or missing in environment config; fails only at runtime:
+
+```yaml
+# application.yml
+payment-service.base-url: http://payments.internal         # plain HTTP to an HTTPS-only service
+recommendation-service.base-url: recommendations.internal  # no scheme — MalformedURLException at startup
+```
+
+✅ Good — full URL with the correct scheme, verified to match what the downstream service accepts:
+
+```yaml
+payment-service.base-url: https://payments.internal
+recommendation-service.base-url: https://recommendations.internal
+```
+
+An `http://` URL sent to an HTTPS-only endpoint typically returns a redirect or connection error that only surfaces in production. Validate base URLs at application startup so misconfiguration fails fast rather than silently.
 
 </details>
 </blockquote>
