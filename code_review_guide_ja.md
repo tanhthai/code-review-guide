@@ -10,9 +10,14 @@
 6. [テスタビリティ](#テスタビリティ設計品質の指標)
 7. [テストカバレッジとテスト品質](#テストカバレッジとテスト品質)
 8. [可読性と保守性](#可読性と保守性)
-9. [インフラとコスト影響](#インフラとコスト影響上級レビュー)
-10. [スタイルとフォーマット](#スタイルとフォーマット最後に)
-11. [実装意図と代替案の分析](#実装意図と代替案の分析)
+9. [型チェック](#型チェック)
+10. [インフラとコスト影響](#インフラとコスト影響上級レビュー)
+11. [スタイルとフォーマット](#スタイルとフォーマット最後に)
+12. [実装意図と代替案の分析](#実装意図と代替案の分析)
+13. [信頼性](#信頼性)
+14. [オペレーショナルエクセレンス](#オペレーショナルエクセレンス)
+15. [コスト最適化](#コスト最適化)
+16. [持続可能性](#持続可能性)
 
 ---
 
@@ -1447,6 +1452,298 @@ double adjustedScore = rawScore * 0.85 + (completionRate * 15);
 
 ---
 
+## 型チェック
+
+> 型システムは、ランタイムコストゼロで、バグ全体のクラスに対するあなたの最初の防衛線です。
+
+- プリミティブへの執着がある？生の`String` / `long` / `int`の代わりにドメイン型を使用しているか？
+- 特定の型が存在するのに`Object`、生の`Map`、または`Any`を使用しているか？
+- nullは安全に処理されているか？（`Optional`、null可能性アノテーション、またはnullセーフラッパー）
+- 未チェックのキャストが存在し、説明がないか？
+- 閉じた値のセットがマジック文字列や整数定数ではなく`enum`で定義されているか？
+- **TypeScript?** `unknown`が適切な箇所で`any`を使用しているか？型ガードの代わりに安全でない`as`キャストを使用しているか？共用体型に判別子が欠けているか？値の混在が起こりうる箇所でブランデッド型が欠けているか？
+
+**型の優れたAPIは、コードが実行される前にバグ全体のカテゴリを表現不能にします。**
+
+<details>
+<summary>詳細</summary>
+
+<blockquote>
+<details>
+<summary>プリミティブへの執着がある？</summary>
+
+**要件:** 注文IDと顧客IDを使用して支払いを処理する。
+
+❌ 悪い例 — 生のプリミティブには型情報がなく、引数の順序が間違っていてもコンパイルが通る:
+
+```java
+public void processPayment(long orderId, long customerId, double amount) { ... }
+
+// 呼び出し元が引数を間違った順序で渡す — コンパイルエラーなし:
+processPayment(customerId, orderId, amount);
+```
+
+✅ 良い例 — ドメイン型により引数の順序間違いがコンパイルエラーになる:
+
+```java
+public record OrderId(long value) {}
+public record CustomerId(long value) {}
+public record Money(double amount, Currency currency) {}
+
+public void processPayment(OrderId orderId, CustomerId customerId, Money amount) { ... }
+
+// これはコンパイルエラーになる — 型が一致しない:
+processPayment(customerId, orderId, amount); // ❌ CustomerIdはOrderIdではない
+```
+
+ドメイン型はビジネスルールも持てます: `Money`型は負の値を強制できますが、生の`double`にはできません。
+
+</details>
+
+<details>
+<summary>特定の型が存在するのに`Object`、生の`Map`、または`Any`を使用しているか？</summary>
+
+❌ 悪い例 — 呼び出し元はどのキーや値の型を期待すべきかわからない:
+
+```java
+public Map<String, Object> getUserProfile(Long userId) {
+    Map<String, Object> profile = new HashMap<>();
+    profile.put("name", "Jane");
+    profile.put("age", 30);
+    profile.put("premium", true);
+    return profile;
+}
+```
+
+✅ 良い例 — 型付き戻り値がコントラクトを明示的に伝える:
+
+```java
+public record UserProfile(String name, int age, boolean isPremium) {}
+
+public UserProfile getUserProfile(Long userId) { ... }
+```
+
+呼び出し元はコンパイル時にフィールド名と型を取得できます。フィールド名を変更するとコンパイラーを通じて伝播し、ランタイムで`null`や`ClassCastException`が発生する代わりにコンパイルエラーになります。
+
+</details>
+
+<details>
+<summary>nullは安全に処理されているか？</summary>
+
+**要件:** ユーザーのオプションの表示名を返す。
+
+❌ 悪い例 — nullable な戻り値が黙って漏れ出す。呼び出し元がnullチェックを忘れる:
+
+```java
+public String getDisplayName(Long userId) {
+    return userRepository.findById(userId).getDisplayName(); // nullを返す可能性がある
+}
+```
+
+✅ 良い例 — `Optional`が不在のコントラクトを明示的に示す:
+
+```java
+public Optional<String> getDisplayName(Long userId) {
+    return Optional.ofNullable(
+        userRepository.findById(userId).getDisplayName()
+    );
+}
+```
+
+`Optional`が使用できない場合（例: パフォーマンスが重要なコードやコレクション要素の戻り型）、静的解析ツールと呼び出し元が何を期待するかわかるように`@Nullable` / `@NonNull`アノテーションを使用してください。
+
+</details>
+
+<details>
+<summary>未チェックのキャストが存在し、説明がないか？</summary>
+
+❌ 悪い例 — 未チェックのキャストが黙って抑制される。前提が崩れるとランタイムで失敗する:
+
+```java
+@SuppressWarnings("unchecked")
+public List<Order> getOrders(Object raw) {
+    return (List<Order>) raw; // rawが別のものを含む場合ClassCastException
+}
+```
+
+✅ 良い例 — キャスト前に検証するか、キャストを避けるように再設計する:
+
+```java
+public List<Order> getOrders(List<?> raw) {
+    return raw.stream()
+        .filter(item -> item instanceof Order)
+        .map(item -> (Order) item)
+        .collect(Collectors.toList());
+}
+```
+
+抑制が本当に避けられない場合は、キャストがなぜ安全か、どの不変条件がそれを保証するかを正確に説明するコメントを追加してください。
+
+</details>
+
+<details>
+<summary>閉じた値のセットは`enum`で定義されているか？</summary>
+
+**要件:** 注文ステータスとして`PENDING`、`PROCESSING`、または`COMPLETED`を表現する。
+
+❌ 悪い例 — マジック文字列。タイポがコンパイルされ、網羅性が強制されない:
+
+```java
+public void updateStatus(String status) {
+    if (status.equals("PENDNG")) { ... } // タイポ — コンパイルが通り、黙って何もしない
+}
+```
+
+✅ 良い例 — `enum`が無効な値を表現不能にし、switch文の網羅性チェックが可能になる:
+
+```java
+public enum OrderStatus { PENDING, PROCESSING, COMPLETED }
+
+public void updateStatus(OrderStatus status) {
+    switch (status) {
+        case PENDING     -> ...;
+        case PROCESSING  -> ...;
+        case COMPLETED   -> ...;
+        // 新しいenum値が追加されてハンドルされていない場合、コンパイラが警告する
+    }
+}
+```
+
+</details>
+
+<details>
+<summary>TypeScript: 高度な型システムのチェック</summary>
+
+TypeScriptの型システムはJavaよりもはるかに表現力が高いですが、その表現力は誤用される可能性があります。これらのチェックは上記の一般的なものに加えて適用されます。
+
+### `any` vs `unknown`
+
+❌ 悪い例 — `any`はすべての型チェックを無効化する。エラーはランタイムまで延期される:
+
+```typescript
+function parseConfig(raw: any) {
+    return raw.timeout * 1000; // rawがnullや文字列でもエラーなし
+}
+```
+
+✅ 良い例 — `unknown`は呼び出し元が使用前に型を絞り込むことを強制する:
+
+```typescript
+function parseConfig(raw: unknown) {
+    if (typeof raw !== 'object' || raw === null || !('timeout' in raw)) {
+        throw new Error('無効な設定');
+    }
+    return (raw as { timeout: number }).timeout * 1000;
+}
+```
+
+### 判別共用体と網羅性
+
+❌ 悪い例 — 判別子がない。各ブランチは安全でないキャストを必要とする:
+
+```typescript
+type Shape = { width: number; height: number } | { radius: number };
+
+function area(shape: Shape) {
+    return (shape as any).radius
+        ? Math.PI * (shape as any).radius ** 2
+        : (shape as any).width * (shape as any).height;
+}
+```
+
+✅ 良い例 — 判別子フィールドにより各ブランチが型安全になる。`never`がコンパイル時に未処理のバリアントを捕捉する:
+
+```typescript
+type Shape =
+    | { kind: 'rect';   width: number; height: number }
+    | { kind: 'circle'; radius: number };
+
+function area(shape: Shape): number {
+    switch (shape.kind) {
+        case 'rect':   return shape.width * shape.height;
+        case 'circle': return Math.PI * shape.radius ** 2;
+        default: {
+            const _exhaustive: never = shape; // 新しいバリアントが追加されてハンドルされない場合コンパイルエラー
+            throw new Error(`未処理のShape: ${_exhaustive}`);
+        }
+    }
+}
+```
+
+### `as`キャスト vs 型ガード
+
+❌ 悪い例 — `as`は型システムをバイパスする。前提が崩れるとランタイムで間違いになる:
+
+```typescript
+function getUser(data: unknown): User {
+    return data as User; // 構造チェックなし
+}
+```
+
+✅ 良い例 — 型ガードが最初に検証する。内部の絞り込まれた型は安全:
+
+```typescript
+function isUser(data: unknown): data is User {
+    return typeof data === 'object' && data !== null && 'id' in data && 'email' in data;
+}
+
+function getUser(data: unknown): User {
+    if (!isUser(data)) throw new Error('無効なユーザーペイロード');
+    return data; // Userに絞り込まれる — キャスト不要
+}
+```
+
+### ブランデッド型 / 公称型
+
+❌ 悪い例 — 構造的エイリアスは互換性がある。間違ったIDが黙って渡される:
+
+```typescript
+type UserId    = string;
+type ProductId = string;
+
+function getProduct(id: ProductId) { ... }
+
+const userId: UserId = 'usr_123';
+getProduct(userId); // エラーなし — UserIdとProductIdは構造的に同一
+```
+
+✅ 良い例 — ブランデッド型がコンパイル時にドメイン間の値の混在を防ぐ:
+
+```typescript
+type UserId    = string & { readonly __brand: 'UserId' };
+type ProductId = string & { readonly __brand: 'ProductId' };
+
+function getProduct(id: ProductId) { ... }
+
+const userId = 'usr_123' as UserId;
+getProduct(userId); // ❌ コンパイルエラー — UserIdはProductIdに代入できない
+```
+
+### ジェネリック制約
+
+❌ 悪い例 — 制約のない`T`。関数はプロパティにアクセスするためにキャストを強いられる:
+
+```typescript
+function getLabel<T>(item: T): string {
+    return (item as any).label; // 強制キャスト — コンパイラのサポートなし
+}
+```
+
+✅ 良い例 — `T extends { label: string }`でコンパイラに本体を型チェックするのに十分な情報を与える:
+
+```typescript
+function getLabel<T extends { label: string }>(item: T): string {
+    return item.label; // 安全 — Tには必ず.labelがある
+}
+```
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
 ## インフラとコスト影響（上級レビュー）
 
 > シニアレベルのチェック。
@@ -1802,6 +2099,532 @@ public class ProductService {
 - 具体的な代替案を提案している
 - 考えられる制約を認めている
 - 変更を要求するのではなく、議論に招いている
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
+## 信頼性
+
+> 信頼性の高いシステムは、依存関係に障害が発生しても正しく機能し続けます。
+
+- すべての外部呼び出しにタイムアウトが設定されているか？
+- リトライロジックは指数バックオフを使用しているか？
+- 不安定な依存関係をサーキットブレーカーが保護しているか？
+- 依存関係が利用不能な場合のグレースフルデグレードはあるか？
+- ヘルスチェックエンドポイントは依存関係の実際の状態を正確に反映しているか？
+
+**明示的なフォールトトレランスがなければ、一つの遅い依存関係がサービス全体をダウンさせる可能性があります。**
+
+<details>
+<summary>詳細</summary>
+
+<blockquote>
+<details>
+<summary>すべての外部呼び出しにタイムアウトが設定されているか？</summary>
+
+すべての外部呼び出し（HTTP、DB、キャッシュ、メッセージブローカー）にはタイムアウトが必要です。タイムアウトがない場合、一つの遅いダウンストリームがスレッドプールを枯渇させ、サービス全体を停止させる可能性があります。
+
+❌ 悪い例 — タイムアウトなし。遅いダウンストリームがスレッドを無期限にブロックする:
+
+```java
+RestTemplate restTemplate = new RestTemplate();
+PaymentResponse response = restTemplate.postForObject(
+    paymentUrl, request, PaymentResponse.class // タイムアウトなし — サービスが遅いとスレッドがハングする
+);
+```
+
+✅ 良い例 — 接続タイムアウトと読み取りタイムアウトを設定:
+
+```java
+HttpComponentsClientHttpRequestFactory factory = new HttpComponentsClientHttpRequestFactory();
+factory.setConnectTimeout(2_000); // 接続確立に2秒
+factory.setReadTimeout(5_000);    // 完全なレスポンスの受信に5秒
+RestTemplate restTemplate = new RestTemplate(factory);
+```
+
+</details>
+
+<details>
+<summary>リトライロジックは指数バックオフを使用しているか？</summary>
+
+**シナリオ:** サードパーティサービスへのAPI呼び出しが一時的な503エラーで時々失敗します。PRはディレイなしで3回すぐにリトライします。負荷がかかると、すべての呼び出し元が同時にリトライし、すでに苦しんでいるサービスに「サンダリングハード」を引き起こし、回復を妨げます。
+
+❌ 悪い例 — ディレイなしの即時リトライ。すべての呼び出し元がサービスを一度に攻撃する:
+
+```java
+for (int i = 0; i < 3; i++) {
+    try {
+        return externalService.call(request);
+    } catch (TransientException e) {
+        // 即時リトライ — サンダリングハード
+    }
+}
+throw new ServiceUnavailableException();
+```
+
+✅ 良い例 — ジッター付き指数バックオフ（Spring Retry）:
+
+```java
+@Retryable(
+    value = TransientException.class,
+    maxAttempts = 3,
+    backoff = @Backoff(delay = 500, multiplier = 2, random = true) // 500ms → ~1s → ジッター付き~1.5s
+)
+public Response callExternalService(Request request) {
+    return externalService.call(request);
+}
+```
+
+ジッター（各ディレイに追加されるランダム性）は多数のインスタンス間での同期リトライを防ぎます。各呼び出し元が僅かに異なる時間バックオフします。
+
+</details>
+
+<details>
+<summary>不安定な依存関係をサーキットブレーカーが保護しているか？</summary>
+
+**シナリオ:** 商品ページがレコメンデーションサービスを呼び出していますが、そのサービスが失敗し始めます。サーキットブレーカーがないと、すべての商品ページリクエストが失敗前に5秒のフルタイムアウトを待ちます。スレッドが積み上がります。コア機能がレコメンデーションに依存しない商品ページが完全に利用不能になります。
+
+❌ 悪い例 — サーキット保護なし。すべての呼び出しがフルタイムアウトを待つ:
+
+```java
+public List<Product> getRecommendations(Long userId) {
+    return recommendationService.fetch(userId); // 5秒タイムアウト × 全リクエスト → スレッドプール枯渇
+}
+```
+
+✅ 良い例 — 失敗閾値後にサーキットが開き、フォールバックが即座に返る:
+
+```java
+@CircuitBreaker(name = "recommendations", fallbackMethod = "defaultRecommendations")
+public List<Product> getRecommendations(Long userId) {
+    return recommendationService.fetch(userId);
+}
+
+private List<Product> defaultRecommendations(Long userId, Throwable t) {
+    return Collections.emptyList(); // 高速フォールバック — レコメンデーションなしでもページがロードされる
+}
+```
+
+設定された失敗閾値に達した後、サーキットが開き、すべての呼び出しが即座にフォールバックを返します。タイムアウトなし、スレッドの無駄なし。クールダウン期間後、サーキットが再び閉じます。
+
+</details>
+
+<details>
+<summary>依存関係が利用不能な場合のグレースフルデグレードはあるか？</summary>
+
+**シナリオ:** PRは商品一覧エンドポイント内にインベントリサービスへの呼び出しを追加します。インベントリサービスがダウンすると、例外が伝播し、商品一覧全体が500を返します。在庫状況の表示は補足的なものであり、機能の本質ではないにもかかわらず。
+
+問い: この依存関係が利用不能な場合、システムが提供できる最小限の有用なレスポンスは何か？リクエスト全体を失敗させるのではなく、キャッシュされたデータ、デフォルト値、または部分的なレスポンスを返してください。
+
+非本質的な依存関係が、コアユーザーフローをダウンさせることがあってはなりません。
+
+</details>
+
+<details>
+<summary>ヘルスチェックエンドポイントは依存関係の実際の状態を正確に反映しているか？</summary>
+
+**シナリオ:** サービスは常に`{"status": "UP"}`を返す`/actuator/health`を公開しています。しかし、DBの接続プールが枯渇し、リクエストを実際には処理できません。KubernetesはこれをみてトラフィックをFailしているPodに送り続けます。
+
+確認: ヘルスエンドポイントは実際の依存関係（DBの接続性、キャッシュの可用性、重要なダウンストリームサービス）を検証しているか？常に`UP`を返すヘルスエンドポイントは、ヘルスチェックがないよりも悪いです。オーケストレーターとオンコールエンジニアから障害を隠してしまいます。
+
+Spring Bootでは、依存関係のヘルスインジケーターを設定して`DOWN`が正しく伝播するようにします:
+
+```yaml
+management:
+  health:
+    db:
+      enabled: true
+    redis:
+      enabled: true
+```
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
+## オペレーショナルエクセレンス
+
+> 安全にデプロイできず、本番環境で観察できず、障害時に診断できないコードは、本番対応していません。
+
+- 相関IDを含む構造化ログがあるか？
+- 新しいクロスサービス呼び出しに分散トレーシングスパンが追加されているか？
+- 新しい重要なエンドポイントにアラートまたはSLOが定義されているか？
+- APIの変更は後方互換性があるか、またはバージョン管理されているか？
+- 新しい障害モードが特定されているか？
+
+**オペレーショナルエクセレンスは、障害が発生するかどうかではなく、どれだけ早く検出し回復できるかを決定します。**
+
+<details>
+<summary>詳細</summary>
+
+<blockquote>
+<details>
+<summary>相関IDを含む構造化ログがあるか？</summary>
+
+マルチスレッドまたはマルチサービスのシステムでは、単一のユーザーリクエストが多くのクラスとスレッドにまたがるログ行を生成します。相関IDがなければ、本番障害の診断は、何千もの入り混じったログエントリを手動で選別することを意味します。
+
+❌ 悪い例 — 文字列連結、リクエストコンテキストなし:
+
+```java
+log.info("ユーザー " + userId + " の注文を処理中、金額: " + amount);
+// 200スレッドが同時にログを記録すると、1つのリクエストのすべての行を見つける方法がない
+```
+
+✅ 良い例 — 構造化フィールド + MDC経由の相関IDが自動的に伝播される:
+
+```java
+MDC.put("correlationId", request.getCorrelationId());
+log.info("注文処理中: userId={}, amount={}", userId, amount);
+// このリクエストスレッドの後続のすべてのログ行に相関IDが自動的に付与される
+// ElasticsearchまたはCloudWatchでcorrelationIdフィールドでフィルタリング可能
+```
+
+本番対応ログの主要な特性:
+
+- **構造化**（key=value またはJSON）— フルテキスト検索だけでなく、フィールドでフィルタリング可能
+- **相関ID** — 1つのリクエストのすべてのログ行をサービスをまたいでリンクする
+- **正しいログレベル** — `ERROR`はアクション可能な障害、`WARN`は回復可能な問題、`INFO`は主要ビジネスイベント、`DEBUG`はトラブルシューティングの詳細
+
+</details>
+
+<details>
+<summary>新しいクロスサービス呼び出しに分散トレーシングスパンが追加されているか？</summary>
+
+**シナリオ:** PRはチェックアウトフロー内にインベントリサービスへの呼び出しを追加します。呼び出しをトレーススパンが囲んでいません。本番でチェックアウトのレイテンシが急増します。Jaeger/Zipkinのトレースはチェックアウトエンドポイントが合計3秒かかっていることを示していますが、時間がどこで費やされているかの内訳がありません。インベントリの呼び出しが見えません。
+
+確認: 各新しいクロスサービス呼び出し（HTTP、gRPC、メッセージ公開）にトレーススパンが作成されているか？Spring Cloud SleuthまたはMicrometer TracingでHTTPクライアント呼び出しは自動的にインスツルメントされることが多いですが、カスタム非同期タスクやスレッドの引き渡しには明示的なスパンが必要な場合があります:
+
+```java
+Span span = tracer.nextSpan().name("inventory-check").start();
+try (Tracer.SpanInScope ws = tracer.withSpan(span)) {
+    return inventoryService.checkAvailability(productId);
+} finally {
+    span.end();
+}
+```
+
+</details>
+
+<details>
+<summary>新しい重要なエンドポイントにアラートまたはSLOが定義されているか？</summary>
+
+**シナリオ:** 新しいPOST /paymentsエンドポイントがエラーレートアラートなしでデプロイされます。3日後、支払いゲートウェイの設定変更により、30%の支払いリクエストが黙って失敗します。アラートは発火しません。エンジニアリングチームは4時間後に顧客からの苦情で気づきます。
+
+問い: このエンドポイントは重要なユーザーパスにあるか？YESなら、デプロイ前に定義する:
+
+- エラーレートアラート（例: 5分間で5xxが1%超 → オンコールをページ）
+- レイテンシSLO（例: p99 < 2秒）
+- エラーレートとレイテンシのダッシュボードパネル
+
+PR自体がアラートを設定しない場合でも、リスクが高い場合はレビュアーがその欠如を指摘すべきです。
+
+</details>
+
+<details>
+<summary>APIの変更は後方互換性があるか、またはバージョン管理されているか？</summary>
+
+**シナリオ:** レスポンスJSONのフィールドが`userName`から`username`に名前変更されます。変更がデプロイされます。強制更新されていない既存のモバイルクライアントは、依存しているフィールドに対して`null`を受け取り始めます。
+
+❌ 悪い例 — フィールドが名前変更され、既存のクライアントが即座に壊れる:
+
+```java
+// 変更前: { "userName": "john_doe" }
+public record UserResponse(String username) {} // 名前変更 — 古いクライアントは"userName"にnullを受け取る
+```
+
+✅ 良い例 — 古いフィールドを保持。クライアントは自分のスケジュールで移行できる:
+
+```java
+public record UserResponse(
+    String username,             // 新しい正式名
+    @Deprecated String userName  // クライアントが移行するまで後方互換性のために保持
+) {}
+```
+
+確認:
+
+- このリクエスト/レスポンスフィールドを削除または名前変更するか？
+- 既存フィールドのセマンティクスを変更するか？
+- 以前はオプションだった場所に必須フィールドを追加するか？
+
+いずれかのYESには、バージョン管理戦略が必要です: フィールドエイリアス、APIバージョンサフィックス（`/v2/`）、または両方の名前が存在する移行期間。
+
+</details>
+
+<details>
+<summary>新しい障害モードが特定されているか？</summary>
+
+**シナリオ:** PRは注文を払い戻すバックグラウンドジョブを追加します。ジョブはまずDBを更新し、次に銀行APIを呼び出します。DB更新後に銀行呼び出しが失敗すると、注文は払い戻し済みとしてマークされますが、実際にはお金が送られていません。これは以前は存在しなかった新しい障害モード — 部分的な状態 — です。
+
+PRが新しい障害モード（特にデータの不整合やサイレントなデータ損失を引き起こす可能性があるもの）を導入する場合、レビュアーは次のことを問うべきです:
+
+- どのように検出するか？（エラーログ、アラート、照合ジョブ）
+- どのように修復するか？（手動再実行、自動リトライ、補償トランザクション）
+
+PRに回答がない場合、コメントを残す: *「DB更新後に銀行呼び出しが失敗した場合、不整合をどのように検出し調整しますか？」*
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
+## コスト最適化
+
+> 無駄なパターンはスケールで複利化します — 低トラフィック時は無害に見えるクエリパターンも、本番量では大きなクラウドコストを生み出す可能性があります。
+
+- 実際に必要な列/フィールドのみを取得しているか？
+- データ転送とエグレスのコストは考慮されているか？
+- ワークロードのパターンに対してコンピュートは適切なサイズか？
+- キャッシュによって冗長なダウンストリーム呼び出しが削減されているか？
+- レコードごとのAPI呼び出しの代わりにバッチ操作が使用されているか？
+
+**コストは非機能要件です。スケールでは、誤ったアクセスパターンはパフォーマンスと予算の両方の問題です。**
+
+<details>
+<summary>詳細</summary>
+
+<blockquote>
+<details>
+<summary>実際に必要な列/フィールドのみを取得しているか？</summary>
+
+**要件:** すべてのユーザーにウェルカムメールを送信する。
+
+❌ 悪い例 — 2つのフィールドだけが必要な場合でも、大きなBLOBを含むエンティティ全体を取得する:
+
+```java
+List<User> users = userRepository.findAll(); // SELECT * — アバター、設定、監査履歴を取得
+for (User user : users) {
+    emailService.sendWelcome(user.getEmail(), user.getName()); // 2つのフィールドだけ使用
+}
+```
+
+✅ 良い例 — プロジェクションで必要な列だけを取得:
+
+```java
+public interface UserEmailView {
+    String getName();
+    String getEmail();
+}
+
+List<UserEmailView> users = userRepository.findAllProjectedBy(); // SELECT name, email FROM users
+```
+
+余分な列はそれぞれ、DBのI/O、DBとアプリサーバー間のネットワークバイト、JVMヒーププレッシャーを増やします。数百万行では、レイテンシ、メモリ、コストの差は大きくなります。
+
+</details>
+
+<details>
+<summary>データ転送とエグレスのコストは考慮されているか？</summary>
+
+**シナリオ:** 新しいリストエンドポイントは、各注文レスポンスに商品カタログ全体をネストされたJSON配列として埋め込みます（1レスポンスあたり500以上の商品になることも）。エンドポイントはモバイルアプリから呼び出され、注文状況と合計額のみを表示します。
+
+1日10,000リクエスト、それぞれが200KBの未使用のネストデータを返すと、クラウドプロバイダーのレートで1日2GBのエグレスが課金されます。
+
+確認:
+
+- コンシューマーが実際に表示または使用するフィールドは何か？
+- 呼び出し元がオプトインできる代わりに、大きなネストオブジェクトがデフォルトで含まれているか？
+- レスポンスペイロードは呼び出し元が必要とするものに比例しているか？
+
+スパースフィールドセット、プロジェクションパラメーター、またはサマリービューと詳細ビューの分離エンドポイントを検討してください。
+
+</details>
+
+<details>
+<summary>ワークロードのパターンに対してコンピュートは適切なサイズか？</summary>
+
+**シナリオ:** 照合ジョブが1時間ごとに約30秒間実行されます。メインアプリケーションサービスの長期実行スレッドとして実装されており、何もしない59分間もメモリとスレッドスロットを継続的に消費します。
+
+コンピュートモデルをワークロードに合わせてください:
+
+| ワークロード | より適したもの |
+| --- | --- |
+| イベントによってトリガー、短命 | Lambda / Fargateタスク |
+| スケジュール済み、短時間 | スケジュールLambda / Kubernetes CronJob |
+| 高スループット、継続的 | 常時起動サービス（EC2、ECS） |
+| 重いバッチ、定期的 | AWS Batch / Kubernetes Job |
+
+非頻繁なジョブを常時起動サービスに埋め込むとコンピュートが無駄になります。逆に、10,000 TPSのホットパスにLambdaを使用すると、コールドスタートレイテンシと呼び出しごとのコストが専用インスタンスを超える場合があります。
+
+</details>
+
+<details>
+<summary>キャッシュによって冗長なダウンストリーム呼び出しが削減されているか？</summary>
+
+**シナリオ:** 商品詳細APIが1秒間に100回呼ばれます。各呼び出しで、外部セラーサービスからセラープロフィールを取得していますが、セラープロフィールはほぼ変わりません。キャッシュは存在しません。
+
+100 RPSでは、1日に8,640,000回の外部呼び出しが、ほとんど変わらないデータに対して行われます。
+
+問い: このデータは更新頻度よりもはるかに頻繁に読まれるか？YESなら、短いTTL（60秒）でも外部呼び出しを99.9%削減でき、陳腐化リスクはほとんどありません。
+
+```java
+@Cacheable(value = "sellerProfiles", key = "#sellerId")
+public SellerProfile getSellerProfile(Long sellerId) {
+    return sellerService.fetchProfile(sellerId); // セラーごとに1分間キャッシュ
+}
+```
+
+</details>
+
+<details>
+<summary>レコードごとのAPI呼び出しの代わりにバッチ操作が使用されているか？</summary>
+
+**シナリオ:** PRはループ内でユーザーごとにプッシュ通知サービスを1回呼び出す通知機能を追加します。
+
+❌ 悪い例 — Nユーザーに対してN回の個別HTTP呼び出し:
+
+```java
+for (User user : usersToNotify) {
+    notificationService.sendPush(user.getId(), message); // ユーザーごとに1回のHTTP呼び出し
+}
+```
+
+✅ 良い例 — 単一のバッチ呼び出し:
+
+```java
+List<Long> userIds = usersToNotify.stream().map(User::getId).collect(Collectors.toList());
+notificationService.sendPushBatch(userIds, message); // 全ユーザーに対して1回のHTTP呼び出し
+```
+
+これは外部APIのN+1 DBクエリと同等です。不必要な各呼び出しはネットワークレイテンシ、接続オーバーヘッド、APIレート制限または呼び出しごとの課金プレッシャーを追加します。
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
+## 持続可能性
+
+> 持続可能なソフトウェアは少ないリソースで多くを達成します — CPUサイクルの削減、メモリの削減、ネットワークラウンドトリップの削減、そして不要になったリソースの迅速な解放。
+
+- リソース（接続、ストリーム、スレッド）は使用後に明示的に解放されているか？
+- ホットループ内に冗長な計算はないか？
+- アクセスパターンに対して効率的なデータ構造が選ばれているか？
+- レコードごとのリクエストの代わりにバッチAPI呼び出しが使用されているか？
+- バックグラウンドジョブは必要な間だけ実行されるようにスコープされているか？
+
+**持続可能なコードは、クラウドコスト、カーボンフットプリント、システム負荷を同時に削減します。**
+
+<details>
+<summary>詳細</summary>
+
+<blockquote>
+<details>
+<summary>リソースは使用後に明示的に解放されているか？</summary>
+
+**要件:** 起動時に設定ファイルを読み込む。
+
+❌ 悪い例 — ストリームが閉じられない。繰り返し呼び出されるとOSのファイルハンドルがリークする:
+
+```java
+public String readConfig(String path) throws IOException {
+    InputStream stream = new FileInputStream(path);
+    return new String(stream.readAllBytes()); // ストリームが閉じられない
+}
+```
+
+✅ 良い例 — try-with-resourcesが終了時または例外発生時にクリーンアップを保証する:
+
+```java
+public String readConfig(String path) throws IOException {
+    try (InputStream stream = new FileInputStream(path)) {
+        return new String(stream.readAllBytes());
+    }
+}
+```
+
+リソースリークは負荷がかかるにつれて複利化します。リークしたDB接続はそれぞれプールの可用性を下げ、やがて新しいリクエストが接続を取得できなくなりサービスが停止します。同じパターンをDB接続、HTTPクライアント、ファイルハンドル、スレッドプールエグゼキューターに適用してください。
+
+</details>
+
+<details>
+<summary>ホットループ内に冗長な計算はないか？</summary>
+
+**要件:** アクティブなプロモーションの最低注文金額を満たす注文をフィルタリングする。
+
+❌ 悪い例 — 結果が変わらないにもかかわらず、イテレーションごとに高コストのDB呼び出しを行う:
+
+```java
+public List<Order> filterByActivePromotion(List<Order> orders) {
+    List<Order> result = new ArrayList<>();
+    for (Order order : orders) {
+        Promotion active = promotionService.getActivePromotion(); // イテレーションごとにDB呼び出し
+        if (order.getTotal() >= active.getMinimumOrderValue()) {
+            result.add(order);
+        }
+    }
+    return result;
+}
+```
+
+✅ 良い例 — ループの外で一度取得し、再利用する:
+
+```java
+public List<Order> filterByActivePromotion(List<Order> orders) {
+    Promotion active = promotionService.getActivePromotion(); // 一度取得
+    return orders.stream()
+        .filter(order -> order.getTotal() >= active.getMinimumOrderValue())
+        .collect(Collectors.toList());
+}
+```
+
+イテレーションごとの1回の余分なDB呼び出しは10アイテムでは無視できます。10,000アイテムと100 RPSでは、毎秒100万回の不必要なDB呼び出しになります。
+
+</details>
+
+<details>
+<summary>アクセスパターンに対して効率的なデータ構造が選ばれているか？</summary>
+
+**要件:** リストからブラックリストに載っている商品をフィルタリングする。
+
+❌ 悪い例 — `List.contains()`は1回のチェックにO(n)。全体の複雑度はO(n²):
+
+```java
+public List<Product> filterBlacklisted(List<Product> products, List<Long> blacklistedIds) {
+    return products.stream()
+        .filter(p -> !blacklistedIds.contains(p.getId())) // O(n)のcontainsがO(n)のstream内
+        .collect(Collectors.toList());
+}
+```
+
+✅ 良い例 — 一度`Set`に変換。各ルックアップはO(1):
+
+```java
+public List<Product> filterBlacklisted(List<Product> products, List<Long> blacklistedIds) {
+    Set<Long> blacklistSet = new HashSet<>(blacklistedIds); // 一度変換 — O(n)
+    return products.stream()
+        .filter(p -> !blacklistSet.contains(p.getId()))     // ルックアップはO(1)
+        .collect(Collectors.toList());
+}
+```
+
+非効率なデータ構造はCPUサイクルを無駄にします。スケールでは、これは直接コンピュートコストとエネルギー消費に変わります。
+
+</details>
+
+<details>
+<summary>バックグラウンドジョブは必要な間だけ実行されるようにスコープされているか？</summary>
+
+**シナリオ:** PRはキューを5分ごとに処理する`@Scheduled`ジョブを追加します。処理後、ジョブは残りの5分間何もしませんが、スレッドとDB接続を保持し続けます。
+
+確認:
+
+- このジョブは実行間にリソースを保持しているか？
+- スケジュールではなくオンデマンド（イベント駆動）でトリガーできないか？
+- スケジュール済みの場合、各実行の開始時にリソースを取得し、終了時にすぐ解放しているか？
+
+イベント駆動アプローチ（メッセージが存在する場合のみキューから消費）は、アイドル時のリソース消費を完全に回避します。ポーリングが必要な場合は、各実行の開始時にリソースを取得し、終了時に解放してください — 実行間で保持したままにしてはなりません。
 
 </details>
 </blockquote>

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/thaitran/Documents/workspace/code-review-guide log --format=\"%an\" -1)",
+      "Bash(git -C /Users/thaitran/Documents/workspace/code-review-guide log --format=\"%H %an %ae %s\" --all)"
+    ]
+  }
+}

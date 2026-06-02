@@ -10,9 +10,14 @@ When raising review feedback, prioritize issues in this order — from highest b
 6. [Testability](#testability-design-quality-indicator)
 7. [Test Coverage & Test Quality](#test-coverage--test-quality)
 8. [Readability & Maintainability](#readability--maintainability)
-9. [Infrastructure & Cost Impact](#infrastructure--cost-impact-advanced-review)
-10. [Style & Formatting](#style--formatting-last)
-11. [Implementation Intent & Alternative Analysis](#implementation-intent--alternative-analysis)
+9. [Type Checking](#type-checking)
+10. [Infrastructure & Cost Impact](#infrastructure--cost-impact-advanced-review)
+11. [Style & Formatting](#style--formatting-last)
+12. [Implementation Intent & Alternative Analysis](#implementation-intent--alternative-analysis)
+13. [Reliability](#reliability)
+14. [Operational Excellence](#operational-excellence)
+15. [Cost Optimization](#cost-optimization)
+16. [Sustainability](#sustainability)
 
 ---
 
@@ -1447,6 +1452,298 @@ double adjustedScore = rawScore * 0.85 + (completionRate * 15);
 
 ---
 
+## Type Checking
+
+> The type system is your first line of defence against a whole class of bugs — at zero runtime cost.
+
+- Primitive obsession? Use domain types, not raw `String` / `long` / `int`
+- Using `Object`, raw `Map`, or `Any` where a specific type exists?
+- Null handled safely? (`Optional`, nullability annotations, or null-safe wrappers)
+- Unchecked casts present and unexplained?
+- Closed value sets defined as `enum`, not magic strings or integer constants?
+- **TypeScript?** `any` where `unknown` fits? Unsafe `as` casts instead of type guards? Missing discriminants on union types? Branded types missing where value mix-ups are possible?
+
+**A well-typed API makes entire categories of bugs unrepresentable before the code runs.**
+
+<details>
+<summary>Further details</summary>
+
+<blockquote>
+<details>
+<summary>Primitive obsession?</summary>
+
+**Requirement:** Process a payment using an order ID and a customer ID.
+
+❌ Bad — raw primitives carry no type information; wrong argument order compiles silently:
+
+```java
+public void processPayment(long orderId, long customerId, double amount) { ... }
+
+// Caller passes arguments in the wrong order — no compile error:
+processPayment(customerId, orderId, amount);
+```
+
+✅ Good — domain types make wrong argument order a compile error:
+
+```java
+public record OrderId(long value) {}
+public record CustomerId(long value) {}
+public record Money(double amount, Currency currency) {}
+
+public void processPayment(OrderId orderId, CustomerId customerId, Money amount) { ... }
+
+// Now this is a compile error — types do not match:
+processPayment(customerId, orderId, amount); // ❌ CustomerId is not an OrderId
+```
+
+Domain types also carry business rules: a `Money` type can enforce non-negative values; a plain `double` cannot.
+
+</details>
+
+<details>
+<summary>Using `Object`, raw `Map`, or `Any` where a specific type exists?</summary>
+
+❌ Bad — caller has no idea what keys or value types to expect:
+
+```java
+public Map<String, Object> getUserProfile(Long userId) {
+    Map<String, Object> profile = new HashMap<>();
+    profile.put("name", "Jane");
+    profile.put("age", 30);
+    profile.put("premium", true);
+    return profile;
+}
+```
+
+✅ Good — typed return communicates the contract explicitly:
+
+```java
+public record UserProfile(String name, int age, boolean isPremium) {}
+
+public UserProfile getUserProfile(Long userId) { ... }
+```
+
+Callers get compile-time field names and types. Renaming a field propagates through the compiler — instead of causing a runtime `null` or `ClassCastException`.
+
+</details>
+
+<details>
+<summary>Null handled safely?</summary>
+
+**Requirement:** Return a user's optional display name.
+
+❌ Bad — nullable return leaks silently; callers forget to null-check:
+
+```java
+public String getDisplayName(Long userId) {
+    return userRepository.findById(userId).getDisplayName(); // may return null
+}
+```
+
+✅ Good — `Optional` signals the absence contract explicitly:
+
+```java
+public Optional<String> getDisplayName(Long userId) {
+    return Optional.ofNullable(
+        userRepository.findById(userId).getDisplayName()
+    );
+}
+```
+
+When `Optional` is not available (e.g. for performance-sensitive code or collection element types), use `@Nullable` / `@NonNull` annotations so static analysis tools and callers know what to expect.
+
+</details>
+
+<details>
+<summary>Unchecked casts present and unexplained?</summary>
+
+❌ Bad — unchecked cast suppressed silently; fails at runtime if the assumption ever breaks:
+
+```java
+@SuppressWarnings("unchecked")
+public List<Order> getOrders(Object raw) {
+    return (List<Order>) raw; // ClassCastException if raw contains something else
+}
+```
+
+✅ Good — validate before casting, or redesign to avoid the cast entirely:
+
+```java
+public List<Order> getOrders(List<?> raw) {
+    return raw.stream()
+        .filter(item -> item instanceof Order)
+        .map(item -> (Order) item)
+        .collect(Collectors.toList());
+}
+```
+
+If suppression is truly unavoidable, add a comment explaining exactly why the cast is safe and which invariant guarantees it.
+
+</details>
+
+<details>
+<summary>Closed value sets defined as `enum`?</summary>
+
+**Requirement:** Represent an order status of `PENDING`, `PROCESSING`, or `COMPLETED`.
+
+❌ Bad — magic strings; typos compile, exhaustiveness is unenforced:
+
+```java
+public void updateStatus(String status) {
+    if (status.equals("PENDNG")) { ... } // typo — compiles, silently does nothing
+}
+```
+
+✅ Good — `enum` makes invalid values unrepresentable and switch exhaustiveness checkable:
+
+```java
+public enum OrderStatus { PENDING, PROCESSING, COMPLETED }
+
+public void updateStatus(OrderStatus status) {
+    switch (status) {
+        case PENDING     -> ...;
+        case PROCESSING  -> ...;
+        case COMPLETED   -> ...;
+        // compiler warns if a new enum value is added and not handled here
+    }
+}
+```
+
+</details>
+
+<details>
+<summary>TypeScript: advanced type system checks</summary>
+
+TypeScript's type system is far more expressive than Java's — but that expressiveness can be misused. These checks apply on top of the general ones above.
+
+### `any` vs `unknown`
+
+❌ Bad — `any` silences all type checks; errors are deferred to runtime:
+
+```typescript
+function parseConfig(raw: any) {
+    return raw.timeout * 1000; // no error even if raw is null or a string
+}
+```
+
+✅ Good — `unknown` forces the caller to narrow before use:
+
+```typescript
+function parseConfig(raw: unknown) {
+    if (typeof raw !== 'object' || raw === null || !('timeout' in raw)) {
+        throw new Error('Invalid config');
+    }
+    return (raw as { timeout: number }).timeout * 1000;
+}
+```
+
+### Discriminated unions and exhaustiveness
+
+❌ Bad — no discriminant; branches require unsafe casts:
+
+```typescript
+type Shape = { width: number; height: number } | { radius: number };
+
+function area(shape: Shape) {
+    return (shape as any).radius
+        ? Math.PI * (shape as any).radius ** 2
+        : (shape as any).width * (shape as any).height;
+}
+```
+
+✅ Good — discriminant field makes each branch type-safe; `never` catches unhandled variants at compile time:
+
+```typescript
+type Shape =
+    | { kind: 'rect';   width: number; height: number }
+    | { kind: 'circle'; radius: number };
+
+function area(shape: Shape): number {
+    switch (shape.kind) {
+        case 'rect':   return shape.width * shape.height;
+        case 'circle': return Math.PI * shape.radius ** 2;
+        default: {
+            const _exhaustive: never = shape; // compile error if a new variant is added and not handled here
+            throw new Error(`Unhandled shape: ${_exhaustive}`);
+        }
+    }
+}
+```
+
+### `as` casts vs type guards
+
+❌ Bad — `as` bypasses the type system; wrong at runtime if the assumption breaks:
+
+```typescript
+function getUser(data: unknown): User {
+    return data as User; // no structural check performed
+}
+```
+
+✅ Good — a type guard validates first; the narrowed type inside is safe:
+
+```typescript
+function isUser(data: unknown): data is User {
+    return typeof data === 'object' && data !== null && 'id' in data && 'email' in data;
+}
+
+function getUser(data: unknown): User {
+    if (!isUser(data)) throw new Error('Invalid user payload');
+    return data; // narrowed to User — no cast needed
+}
+```
+
+### Branded / nominal types
+
+❌ Bad — structural aliases are interchangeable; wrong IDs can be passed silently:
+
+```typescript
+type UserId    = string;
+type ProductId = string;
+
+function getProduct(id: ProductId) { ... }
+
+const userId: UserId = 'usr_123';
+getProduct(userId); // no error — UserId and ProductId are structurally identical
+```
+
+✅ Good — branded types prevent cross-domain value mix-ups at compile time:
+
+```typescript
+type UserId    = string & { readonly __brand: 'UserId' };
+type ProductId = string & { readonly __brand: 'ProductId' };
+
+function getProduct(id: ProductId) { ... }
+
+const userId = 'usr_123' as UserId;
+getProduct(userId); // ❌ compile error — UserId is not assignable to ProductId
+```
+
+### Generic constraints
+
+❌ Bad — unconstrained `T`; the function must cast to access any property:
+
+```typescript
+function getLabel<T>(item: T): string {
+    return (item as any).label; // forced cast — no compiler help
+}
+```
+
+✅ Good — `T extends { label: string }` gives the compiler enough information to type-check the body:
+
+```typescript
+function getLabel<T extends { label: string }>(item: T): string {
+    return item.label; // safe — T is guaranteed to have .label
+}
+```
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
 ## Infrastructure & Cost Impact (Advanced Review)
 
 > Senior-level check.
@@ -1802,6 +2099,532 @@ This comment:
 - Proposes a concrete alternative
 - Acknowledges possible constraints
 - Invites discussion rather than demanding a change
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
+## Reliability
+
+> A reliable system continues to function correctly even when dependencies fail.
+
+- Timeouts set on all external calls?
+- Retry logic uses exponential backoff?
+- Circuit breaker protects unstable dependencies?
+- Graceful degradation when a dependency is unavailable?
+- Health check endpoints accurately reflect dependency status?
+
+**Without explicit fault tolerance, a single slow dependency can bring down the entire service.**
+
+<details>
+<summary>Further details</summary>
+
+<blockquote>
+<details>
+<summary>Timeouts set on all external calls?</summary>
+
+Every external call (HTTP, DB, cache, message broker) needs a timeout. A missing timeout means one slow downstream can exhaust the thread pool and freeze the entire service.
+
+❌ Bad — no timeout; a slow downstream blocks threads indefinitely:
+
+```java
+RestTemplate restTemplate = new RestTemplate();
+PaymentResponse response = restTemplate.postForObject(
+    paymentUrl, request, PaymentResponse.class // No timeout — thread hangs if service is slow
+);
+```
+
+✅ Good — connection and read timeouts configured:
+
+```java
+HttpComponentsClientHttpRequestFactory factory = new HttpComponentsClientHttpRequestFactory();
+factory.setConnectTimeout(2_000); // 2s to establish connection
+factory.setReadTimeout(5_000);    // 5s to receive full response
+RestTemplate restTemplate = new RestTemplate(factory);
+```
+
+</details>
+
+<details>
+<summary>Retry logic uses exponential backoff?</summary>
+
+**Scenario:** An API call to a third-party service occasionally fails with transient 503 errors. The PR retries three times in a tight loop with no delay. Under load, all callers retry simultaneously — creating a thundering herd that overwhelms the already-struggling service and prevents it from recovering.
+
+❌ Bad — immediate retry with no delay; all callers hammer the service at once:
+
+```java
+for (int i = 0; i < 3; i++) {
+    try {
+        return externalService.call(request);
+    } catch (TransientException e) {
+        // retry immediately — thundering herd
+    }
+}
+throw new ServiceUnavailableException();
+```
+
+✅ Good — exponential backoff with jitter (Spring Retry):
+
+```java
+@Retryable(
+    value = TransientException.class,
+    maxAttempts = 3,
+    backoff = @Backoff(delay = 500, multiplier = 2, random = true) // 500ms → ~1s → ~1.5s with jitter
+)
+public Response callExternalService(Request request) {
+    return externalService.call(request);
+}
+```
+
+Jitter (random added to each delay) prevents synchronized retries across many instances — each caller backs off by a slightly different amount.
+
+</details>
+
+<details>
+<summary>Circuit breaker protects unstable dependencies?</summary>
+
+**Scenario:** A product page calls a recommendations service that starts failing. With no circuit breaker, every product page request waits for the full 5-second timeout before failing. Threads pile up. The product page — whose core functionality does not depend on recommendations — becomes completely unavailable.
+
+❌ Bad — no circuit protection; every call waits for the full timeout:
+
+```java
+public List<Product> getRecommendations(Long userId) {
+    return recommendationService.fetch(userId); // 5s timeout × every request → thread pool exhaustion
+}
+```
+
+✅ Good — circuit opens after failure threshold; fallback returns immediately:
+
+```java
+@CircuitBreaker(name = "recommendations", fallbackMethod = "defaultRecommendations")
+public List<Product> getRecommendations(Long userId) {
+    return recommendationService.fetch(userId);
+}
+
+private List<Product> defaultRecommendations(Long userId, Throwable t) {
+    return Collections.emptyList(); // fast fallback — page still loads without recommendations
+}
+```
+
+After a configured failure threshold, the circuit opens and all calls return the fallback immediately — no timeouts, no thread waste. The circuit closes again after a cooldown period.
+
+</details>
+
+<details>
+<summary>Graceful degradation when a dependency is unavailable?</summary>
+
+**Scenario:** A PR adds a call to an inventory service inside the product listing endpoint. When the inventory service is down, the exception propagates and the entire product listing returns 500 — even though showing inventory status is supplemental, not essential to the feature.
+
+Ask: if this dependency is unavailable, what is the minimum useful response the system can still provide? Return cached data, defaults, or a partial response rather than failing the whole request.
+
+Non-essential dependencies should never take down a core user flow.
+
+</details>
+
+<details>
+<summary>Health check endpoints accurately reflect dependency status?</summary>
+
+**Scenario:** The service exposes `/actuator/health` which always returns `{"status": "UP"}`. But the database connection pool is exhausted and no requests can actually be served. Kubernetes keeps routing traffic to the failing pod.
+
+Check: does the health endpoint verify real dependencies (DB connectivity, cache availability, critical downstream services)? A health endpoint that always returns `UP` is worse than no health check — it hides failures from orchestrators and on-call engineers.
+
+In Spring Boot, configure dependency health indicators so `DOWN` propagates correctly:
+
+```yaml
+management:
+  health:
+    db:
+      enabled: true
+    redis:
+      enabled: true
+```
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
+## Operational Excellence
+
+> Code that cannot be safely deployed, observed, or diagnosed under failure is not production-ready.
+
+- Structured logs with correlation IDs?
+- Distributed trace spans added for new cross-service calls?
+- Alerting or SLO defined for new critical endpoints?
+- API changes backward compatible or versioned?
+- New failure modes identified?
+
+**Operational excellence determines how quickly you detect and recover — not whether failures happen.**
+
+<details>
+<summary>Further details</summary>
+
+<blockquote>
+<details>
+<summary>Structured logs with correlation IDs?</summary>
+
+In a multi-threaded or multi-service system, a single user request produces log lines across many classes and threads. Without a correlation ID, diagnosing a production failure means manually sifting thousands of interleaved entries.
+
+❌ Bad — unstructured string, no request context:
+
+```java
+log.info("Processing order for user " + userId + ", amount: " + amount);
+// 200 threads log simultaneously — no way to find all lines from one request
+```
+
+✅ Good — structured fields + correlation ID via MDC:
+
+```java
+MDC.put("correlationId", request.getCorrelationId());
+log.info("Processing order: userId={}, amount={}", userId, amount);
+// Every subsequent log line in this request thread automatically carries correlationId
+// Filterable in Elasticsearch or CloudWatch by correlationId field
+```
+
+Key properties of production-ready logs:
+
+- **Structured** (key=value or JSON) — filterable by field, not just full-text search
+- **Correlation ID** — links all log lines from one request across services
+- **Correct log level** — `ERROR` for actionable failures, `WARN` for recoverable issues, `INFO` for key business events, `DEBUG` for troubleshooting detail
+
+</details>
+
+<details>
+<summary>Distributed trace spans added for new cross-service calls?</summary>
+
+**Scenario:** A PR adds a call to an inventory service inside the checkout flow. No trace span wraps the call. In production, checkout latency spikes. The Jaeger/Zipkin trace shows the checkout endpoint taking 3s total — but no breakdown of where the time is spent. The inventory call is invisible.
+
+Check: for each new cross-service call (HTTP, gRPC, message publish), is a trace span created? With Spring Cloud Sleuth or Micrometer Tracing, HTTP client calls are often instrumented automatically — but custom async tasks or thread hand-offs may require explicit spans:
+
+```java
+Span span = tracer.nextSpan().name("inventory-check").start();
+try (Tracer.SpanInScope ws = tracer.withSpan(span)) {
+    return inventoryService.checkAvailability(productId);
+} finally {
+    span.end();
+}
+```
+
+</details>
+
+<details>
+<summary>Alerting or SLO defined for new critical endpoints?</summary>
+
+**Scenario:** A new POST /payments endpoint is deployed with no error-rate alert. Three days later, a payment gateway config change causes 30% of payment requests to fail silently. No alert fires. The engineering team learns about it from customer complaints 4 hours later.
+
+Ask: is this endpoint on a critical user path? If yes, before deploy:
+
+- Define an error rate alert (e.g., >1% 5xx over 5 minutes → page on-call)
+- Define a latency SLO (e.g., p99 < 2s)
+- Add a dashboard panel for error rate and latency
+
+The PR itself may not configure alerts, but reviewers should flag the absence when the stakes are high.
+
+</details>
+
+<details>
+<summary>API changes backward compatible or versioned?</summary>
+
+**Scenario:** A field in a response JSON is renamed from `userName` to `username`. The change is deployed. Existing mobile clients — not force-updated — start receiving `null` for the field they rely on.
+
+❌ Bad — field renamed; existing clients break immediately:
+
+```java
+// Before: { "userName": "john_doe" }
+public record UserResponse(String username) {} // renamed — old clients receive null for "userName"
+```
+
+✅ Good — old field kept; clients migrate on their own schedule:
+
+```java
+public record UserResponse(
+    String username,             // new canonical name
+    @Deprecated String userName  // kept for backward compatibility until clients migrate
+) {}
+```
+
+Ask:
+
+- Does this rename or remove a request/response field?
+- Does it change the semantics of an existing field?
+- Does it add a required field where one was previously optional?
+
+Any yes requires a versioning strategy: field aliasing, API version suffix (`/v2/`), or a migration period with both names present.
+
+</details>
+
+<details>
+<summary>New failure modes identified?</summary>
+
+**Scenario:** A PR adds a background job that refunds orders. The job updates the DB first, then calls the bank API. If the bank call fails after the DB is updated, the order is marked refunded but no money was actually sent. This is a new failure mode — partial state — that did not exist before.
+
+When a PR introduces a new failure mode, especially one that can cause data inconsistency or silent data loss, reviewers should ask:
+
+- How will this be detected? (error log, alert, reconciliation job)
+- How will it be remediated? (manual re-run, automated retry, compensating transaction)
+
+If the PR has no answer, raise it: *"If the bank call fails after the DB update, how do we detect and reconcile the inconsistency?"*
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
+## Cost Optimization
+
+> Wasteful patterns compound at scale — a slow query or over-fetched payload that seems harmless at low traffic can generate significant cloud spend at production volume.
+
+- Only the columns/fields actually needed are fetched?
+- Data transfer and egress costs considered?
+- Compute right-sized for the workload pattern?
+- Redundant downstream calls reduced through caching?
+- Batch operations used instead of per-record API calls?
+
+**Cost is a non-functional requirement. At scale, the wrong access pattern is both a performance and a budget problem.**
+
+<details>
+<summary>Further details</summary>
+
+<blockquote>
+<details>
+<summary>Only the columns/fields actually needed are fetched?</summary>
+
+**Requirement:** Send a welcome email to all users.
+
+❌ Bad — fetches the entire entity including large blobs, when only two fields are needed:
+
+```java
+List<User> users = userRepository.findAll(); // SELECT * — fetches avatar, preferences, audit history
+for (User user : users) {
+    emailService.sendWelcome(user.getEmail(), user.getName()); // only uses 2 fields
+}
+```
+
+✅ Good — projection fetches only the needed columns:
+
+```java
+public interface UserEmailView {
+    String getName();
+    String getEmail();
+}
+
+List<UserEmailView> users = userRepository.findAllProjectedBy(); // SELECT name, email FROM users
+```
+
+Each extra column adds database I/O, network bytes between DB and app server, and JVM heap pressure. At millions of rows, the difference in latency, memory, and cost is significant.
+
+</details>
+
+<details>
+<summary>Data transfer and egress costs considered?</summary>
+
+**Scenario:** A new list endpoint embeds the full product catalog as a nested JSON array in each order response — sometimes 500+ products per response. The endpoint is called from a mobile app that only displays the order status and total.
+
+At 10,000 daily requests, each returning 200KB of unused nested data, that is 2GB of egress per day billed at cloud provider rates.
+
+Ask:
+
+- What fields does the consumer actually display or use?
+- Are large nested objects included by default when callers could opt in instead?
+- Is the response payload proportional to what the caller needs?
+
+Consider sparse fieldsets, projection parameters, or separate endpoints for summary vs. detail views.
+
+</details>
+
+<details>
+<summary>Compute right-sized for the workload pattern?</summary>
+
+**Scenario:** A reconciliation job runs once per hour for about 30 seconds. It is implemented as a long-running thread in the main application service — consuming memory and a thread slot continuously, even during the 59 minutes it does nothing.
+
+Match the compute model to the workload:
+
+| Workload | Better fit |
+| --- | --- |
+| Triggered by event, short-lived | Lambda / Fargate task |
+| Scheduled, short duration | Scheduled Lambda / Kubernetes CronJob |
+| High-throughput, continuous | Always-on service (EC2, ECS) |
+| Heavy batch, periodic | AWS Batch / Kubernetes Job |
+
+Embedding infrequent jobs in an always-on service wastes compute. Conversely, using Lambda for a 10,000-TPS hot path introduces cold-start latency and per-invocation costs that may exceed a dedicated instance.
+
+</details>
+
+<details>
+<summary>Redundant downstream calls reduced through caching?</summary>
+
+**Scenario:** A product details endpoint is called 100 times per second. For each call, it fetches the seller profile from an external Seller Service — despite seller profiles changing at most a few times per day. No cache is in place.
+
+At 100 RPS, that is 8,640,000 external calls per day for data that almost never changes.
+
+Ask: is this data read far more often than it changes? If yes, even a short TTL (60 seconds) reduces external calls by 99.9% with negligible staleness risk.
+
+```java
+@Cacheable(value = "sellerProfiles", key = "#sellerId")
+public SellerProfile getSellerProfile(Long sellerId) {
+    return sellerService.fetchProfile(sellerId); // cached for 60s; 1 call per minute per seller
+}
+```
+
+</details>
+
+<details>
+<summary>Batch operations used instead of per-record API calls?</summary>
+
+**Scenario:** A PR adds a notification feature that calls the push notification service once per user in a loop.
+
+❌ Bad — N individual HTTP calls for N users:
+
+```java
+for (User user : usersToNotify) {
+    notificationService.sendPush(user.getId(), message); // 1 HTTP call per user
+}
+```
+
+✅ Good — single batch call:
+
+```java
+List<Long> userIds = usersToNotify.stream().map(User::getId).collect(Collectors.toList());
+notificationService.sendPushBatch(userIds, message); // 1 HTTP call for all users
+```
+
+This is the external-API equivalent of the N+1 DB query. Each unnecessary call adds network latency, connection overhead, and often API rate-limit or per-call billing pressure.
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
+## Sustainability
+
+> Sustainable software does more with less — fewer CPU cycles, less memory, fewer network round trips, and resources released promptly when no longer needed.
+
+- Resources (connections, streams, threads) explicitly released after use?
+- No redundant computation inside hot loops?
+- Efficient data structures chosen for the access pattern?
+- Batch API calls used instead of per-record requests?
+- Background jobs scoped to run only as long as needed?
+
+**Sustainable code reduces cloud cost, carbon footprint, and system load simultaneously.**
+
+<details>
+<summary>Further details</summary>
+
+<blockquote>
+<details>
+<summary>Resources explicitly released after use?</summary>
+
+**Requirement:** Read a configuration file on startup.
+
+❌ Bad — stream never closed; OS file handles leak under repeated calls:
+
+```java
+public String readConfig(String path) throws IOException {
+    InputStream stream = new FileInputStream(path);
+    return new String(stream.readAllBytes()); // stream never closed
+}
+```
+
+✅ Good — try-with-resources guarantees cleanup on exit or exception:
+
+```java
+public String readConfig(String path) throws IOException {
+    try (InputStream stream = new FileInputStream(path)) {
+        return new String(stream.readAllBytes());
+    }
+}
+```
+
+Resource leaks compound under load: each leaked DB connection reduces pool availability until new requests cannot obtain a connection and the service stalls. Apply the same pattern to DB connections, HTTP clients, file handles, and thread pool executors.
+
+</details>
+
+<details>
+<summary>No redundant computation inside hot loops?</summary>
+
+**Requirement:** Filter orders that meet the active promotion's minimum order value.
+
+❌ Bad — expensive DB call made on every iteration even though the result does not change:
+
+```java
+public List<Order> filterByActivePromotion(List<Order> orders) {
+    List<Order> result = new ArrayList<>();
+    for (Order order : orders) {
+        Promotion active = promotionService.getActivePromotion(); // DB call on every iteration
+        if (order.getTotal() >= active.getMinimumOrderValue()) {
+            result.add(order);
+        }
+    }
+    return result;
+}
+```
+
+✅ Good — fetch once outside the loop, reuse:
+
+```java
+public List<Order> filterByActivePromotion(List<Order> orders) {
+    Promotion active = promotionService.getActivePromotion(); // fetched once
+    return orders.stream()
+        .filter(order -> order.getTotal() >= active.getMinimumOrderValue())
+        .collect(Collectors.toList());
+}
+```
+
+A single extra DB call per iteration is negligible at 10 items — at 10,000 items and 100 RPS, it becomes 1,000,000 unnecessary DB calls per second.
+
+</details>
+
+<details>
+<summary>Efficient data structures chosen for the access pattern?</summary>
+
+**Requirement:** Filter out blacklisted products from a list.
+
+❌ Bad — `List.contains()` is O(n) per check; total complexity O(n²):
+
+```java
+public List<Product> filterBlacklisted(List<Product> products, List<Long> blacklistedIds) {
+    return products.stream()
+        .filter(p -> !blacklistedIds.contains(p.getId())) // O(n) contains inside O(n) stream
+        .collect(Collectors.toList());
+}
+```
+
+✅ Good — convert to `Set` once; each lookup is O(1):
+
+```java
+public List<Product> filterBlacklisted(List<Product> products, List<Long> blacklistedIds) {
+    Set<Long> blacklistSet = new HashSet<>(blacklistedIds); // convert once — O(n)
+    return products.stream()
+        .filter(p -> !blacklistSet.contains(p.getId()))     // O(1) per lookup
+        .collect(Collectors.toList());
+}
+```
+
+Inefficient data structures waste CPU cycles, which translates directly to compute cost and energy consumption at scale.
+
+</details>
+
+<details>
+<summary>Background jobs scoped to run only as long as needed?</summary>
+
+**Scenario:** A PR adds a `@Scheduled` job that processes a queue every 5 minutes. After processing, the job does nothing for the remaining 5 minutes — but still holds a thread and a DB connection open between runs.
+
+Ask:
+
+- Does this job hold resources between executions?
+- Could it be triggered on-demand (event-driven) instead of on a schedule?
+- If scheduled, does it release all resources immediately after completing its work?
+
+An event-driven approach (consuming from a queue only when messages exist) avoids idle resource consumption entirely. If polling is necessary, acquire resources at the start of each execution and release them at the end — not held open between runs.
 
 </details>
 </blockquote>
