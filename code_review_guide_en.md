@@ -6,18 +6,19 @@ When raising review feedback, prioritize issues in this order — from highest b
 2. [Security](#security-high-risk-area)
 3. [Performance & System Risk](#performance--system-risk)
 4. [Scalability & Concurrency](#scalability--concurrency)
-5. [Architecture & Design](#architecture--design)
-6. [Testability](#testability-design-quality-indicator)
-7. [Test Coverage & Test Quality](#test-coverage--test-quality)
-8. [Readability & Maintainability](#readability--maintainability)
-9. [Type Checking](#type-checking)
-10. [Infrastructure & Cost Impact](#infrastructure--cost-impact-advanced-review)
-11. [Style & Formatting](#style--formatting-last)
-12. [Implementation Intent & Alternative Analysis](#implementation-intent--alternative-analysis)
-13. [Reliability](#reliability)
-14. [Operational Excellence](#operational-excellence)
-15. [Cost Optimization](#cost-optimization)
-16. [Sustainability](#sustainability)
+5. [Cross-System Constraint Propagation](#cross-system-constraint-propagation)
+6. [Architecture & Design](#architecture--design)
+7. [Testability](#testability-design-quality-indicator)
+8. [Test Coverage & Test Quality](#test-coverage--test-quality)
+9. [Readability & Maintainability](#readability--maintainability)
+10. [Type Checking](#type-checking)
+11. [Infrastructure & Cost Impact](#infrastructure--cost-impact-advanced-review)
+12. [Style & Formatting](#style--formatting-last)
+13. [Implementation Intent & Alternative Analysis](#implementation-intent--alternative-analysis)
+14. [Reliability](#reliability)
+15. [Operational Excellence](#operational-excellence)
+16. [Cost Optimization](#cost-optimization)
+17. [Sustainability](#sustainability)
 
 ---
 
@@ -892,6 +893,110 @@ Common patterns to make logic retry-safe:
 - **External API guard** — check if the external call already succeeded before calling again (e.g. look up the charge by order ID before creating a new one)
 
 Ask: if this handler is called twice with the same input, does the outcome change?
+
+</details>
+</blockquote>
+
+</details>
+
+---
+
+## Cross-System Constraint Propagation
+
+> A change that is safe in isolation can silently push a connected system past a hard limit.
+
+- Does this change add to a shared resource budget? (HTTP headers, cookies, JWTs, message payloads)
+- Could accumulated growth eventually hit a limit enforced by a proxy, CDN, API gateway, or load balancer?
+- Does setting a cookie on the naked domain mean it is sent to subdomains with tighter constraints?
+- Does a shared quota or rate limit now serve more callers than it was sized for?
+
+**The failure surfaces in System B, but the cause is a change made in System A.**
+
+<details>
+<summary>Further details</summary>
+
+<blockquote>
+<details>
+<summary>HTTP header size limits — cookies, JWTs, and custom headers</summary>
+
+HTTP headers accumulate from multiple sources: session cookies, analytics cookies, A/B test cookies, authorization tokens, and custom headers all share the same header budget. Servers, proxies, CDNs, and load balancers each enforce their own limits — and these limits are often invisible at the application layer.
+
+**Scenario:** A PR adds three new analytics cookies to the root domain `.example.com`. Browsers automatically send all root-domain cookies to every subdomain. The API at `api.example.com` sits behind an nginx reverse proxy with the default `large_client_header_buffers 4 8k` — meaning no single header can exceed 8KB. Before the change, Cookie headers for authenticated users average 6KB. After, they exceed 8KB and nginx returns `400 Bad Request` on every API call. The failure appears at `api.example.com`, not on the page that set the cookies.
+
+Common hard limits:
+
+| System | Header limit |
+| --- | --- |
+| nginx (default) | 8KB per header, 32KB total |
+| AWS ALB | 64KB total |
+| AWS API Gateway | 10KB total headers |
+| AWS CloudFront | 20KB per header, 40KB total |
+| Browser cookie jar | ~4KB per cookie, 50–180 cookies per domain |
+
+❌ Bad — cookie set on the naked domain; sent to all subdomains regardless of their constraints:
+
+```js
+// Sent automatically to api.example.com, cdn.example.com, admin.example.com, ...
+res.cookie('analytics_v3', largeBlob,    { domain: '.example.com' });
+res.cookie('ab_experiment', payloadJson, { domain: '.example.com' });
+```
+
+✅ Good — scoped to the service that owns the cookie; does not affect subdomains:
+
+```js
+// Only sent to www.example.com — not to the API or CDN
+res.cookie('analytics_v3', sessionId, { domain: 'www.example.com' });
+```
+
+Before setting cookies on the naked domain, audit the total Cookie header size for a typical authenticated user and check the limits of every subdomain system that will receive them.
+
+The same applies to JWTs in `Authorization` headers: adding claims to a token increases the header size on every service that validates it. A token that grows from 3KB to 6KB can breach an API gateway's 10KB header budget combined with other headers.
+
+</details>
+
+<details>
+<summary>Message queue and event payload size limits</summary>
+
+**Scenario:** A PR serializes a full order object — including embedded line items, audit history, and customer profile — into an SQS message. In development with small test data, messages are 50KB. After several months in production, orders for large customers can contain hundreds of line items, pushing messages above SQS's hard 256KB limit. Messages fail to publish; orders are silently dropped with no retry possible.
+
+Common payload limits:
+
+| System | Limit |
+| --- | --- |
+| AWS SQS | 256KB per message |
+| AWS SNS | 256KB per message |
+| Apache Kafka | 1MB default (`message.max.bytes`) |
+| Google Pub/Sub | 10MB per message |
+| AWS EventBridge | 256KB per event |
+
+Ask: what is the maximum realistic payload size for this message at production data volumes? For large payloads, store the object in S3 and put only the reference (ID + S3 key) in the queue — the consumer fetches the full payload on receipt.
+
+</details>
+
+<details>
+<summary>URL length limits in proxies and CDNs</summary>
+
+**Scenario:** A PR adds filter parameters to a search endpoint, encoding them as query string values. For typical users, URLs stay under 2KB. Power users with complex saved filters produce URLs of 9KB. AWS CloudFront rejects URLs over 8KB with `414 URI Too Long` before the request reaches the application — the error cannot be caught or logged by the service.
+
+Common URL limits:
+
+| System | Limit |
+| --- | --- |
+| nginx (default) | 8KB request line |
+| AWS ALB | 16KB |
+| AWS CloudFront | 8KB |
+| Practical browser limit | ~2KB for GET URLs |
+
+If complex filters or bulk identifiers can push URL length past what upstream infrastructure allows, move the payload to a POST body or store the filter state server-side and pass a short identifier.
+
+</details>
+
+<details>
+<summary>Shared API quotas and rate limits</summary>
+
+**Scenario:** Two existing services share a single third-party geocoding API key with a 1,000 req/min rate limit. A PR adds a third service that uses the same key. Each service individually stays well under the limit. Under peak load, all three combined exceed the quota — and the original two services start receiving `429 Too Many Requests` responses, with no change to their own code.
+
+Ask: does this change add a new caller to a shared quota? Is the combined traffic still safely under the limit at peak? If a shared key is the only option, does a dedicated key or quota increase need to accompany this PR?
 
 </details>
 </blockquote>

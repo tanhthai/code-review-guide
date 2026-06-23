@@ -87,7 +87,15 @@ Omit any section that has no findings. Do not repeat the same finding in multipl
 - Safe to retry (idempotent)? — especially critical for message queue consumers
 - JVM-level locks won't protect shared state across multiple instances
 
-### 5. Architecture & Design
+### 5. Cross-System Constraint Propagation
+> A change safe in isolation can silently push a connected system past a hard limit.
+
+- Does this change add to a shared HTTP header budget? (cookies on naked domain → all subdomains receive them; JWT claims growing → every downstream service header gets larger)
+- Could message or payload size hit a queue or gateway limit under realistic large-input scenarios? (SQS/SNS: 256KB; Kafka default: 1MB; API Gateway headers: 10KB)
+- Could URL length exceed limits in upstream proxies or CDNs? (nginx / CloudFront: ~8KB request line)
+- Does this add a new caller to a shared API quota or rate limit that was sized for fewer callers?
+
+### 6. Architecture & Design
 > Check structural integrity.
 
 - Proper layer separation? (no business logic in controller, no infra concern in domain)
@@ -96,7 +104,7 @@ Omit any section that has no findings. Do not repeat the same finding in multipl
 - Single Responsibility Principle respected?
 - No code duplication that should be extracted into a shared component?
 
-### 6. Testability
+### 7. Testability
 > Hard-to-test code is usually poorly designed.
 
 - Dependencies injectable (not hard-coded `new`)?
@@ -104,7 +112,7 @@ Omit any section that has no findings. Do not repeat the same finding in multipl
 - No hidden side effects in what appears to be a pure method?
 - Unit-testable without a real database?
 
-### 7. Test Coverage & Quality
+### 8. Test Coverage & Quality
 > Check the safety net.
 
 - Main flows covered?
@@ -113,7 +121,7 @@ Omit any section that has no findings. Do not repeat the same finding in multipl
 - Tests validate observable behavior, not internal implementation?
 - Integration test present where a real layer boundary (DB, HTTP, queue) is crossed?
 
-### 8. Readability & Maintainability
+### 9. Readability & Maintainability
 > Check clarity.
 
 - Naming meaningful and domain-consistent?
@@ -122,7 +130,7 @@ Omit any section that has no findings. Do not repeat the same finding in multipl
 - No dead code?
 - Complex logic has a comment explaining WHY, not what?
 
-### 9. Type Checking
+### 10. Type Checking
 > The type system is your first line of defence at zero runtime cost.
 
 - Primitive obsession? Use domain types instead of raw `String`/`long`/`int`
@@ -132,7 +140,7 @@ Omit any section that has no findings. Do not repeat the same finding in multipl
 - Closed value sets defined as `enum`, not magic strings or integer constants?
 - **TypeScript:** `any` where `unknown` fits? Unsafe `as` casts instead of type guards? Missing discriminants on union types? Branded types missing where value mix-ups are possible?
 
-### 10. Infrastructure & Cost Impact
+### 11. Infrastructure & Cost Impact
 > Senior-level check.
 
 - New query column used in WHERE/JOIN/ORDER BY without a corresponding index?
@@ -141,7 +149,7 @@ Omit any section that has no findings. Do not repeat the same finding in multipl
 - Cloud cost impact of storage, egress, or compute compounds acceptably?
 - Monitoring and logging sufficient to diagnose failures?
 
-### 11. Reliability
+### 12. Reliability
 > A reliable system continues to function even when dependencies fail.
 
 - Timeouts set on all external calls (HTTP, DB, cache, broker)?
@@ -151,7 +159,7 @@ Omit any section that has no findings. Do not repeat the same finding in multipl
 - Health check endpoints reflect real dependency status (not always-UP)?
 - HTTP client URLs correctly formed? (no double slashes from trailing-slash mismatch, query parameters URL-encoded, correct scheme in config)
 
-### 12. Operational Excellence
+### 13. Operational Excellence
 > Code that can't be safely observed or diagnosed is not production-ready.
 
 - Structured logs with correlation IDs?
@@ -160,7 +168,7 @@ Omit any section that has no findings. Do not repeat the same finding in multipl
 - API changes backward compatible, or versioned with a migration strategy?
 - New failure modes (partial state, data inconsistency) identified and handled?
 
-### 13. Cost Optimization
+### 14. Cost Optimization
 > Wasteful patterns compound at scale.
 
 - Only columns/fields actually needed are fetched? (no SELECT *)
@@ -169,7 +177,7 @@ Omit any section that has no findings. Do not repeat the same finding in multipl
 - Redundant downstream calls reduced through caching on stable data?
 - Batch API calls used instead of per-record requests?
 
-### 14. Sustainability
+### 15. Sustainability
 > Sustainable software does more with less.
 
 - Resources (connections, streams, threads) released after use? (try-with-resources)
@@ -177,7 +185,7 @@ Omit any section that has no findings. Do not repeat the same finding in multipl
 - Efficient data structures for the access pattern? (`Set` for membership checks, not `List`)
 - Background jobs release resources promptly after completing their work?
 
-### 15. Style & Formatting
+### 16. Style & Formatting
 > Only after everything above. These should never block correctness or security issues.
 
 - Formatting consistent with project style?
